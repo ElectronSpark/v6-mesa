@@ -2906,6 +2906,15 @@ dri2_wl_swrast_allocate_xv6_buffer(struct dri2_egl_surface *dri2_surf,
       close(fb_fd);
       return EGL_FALSE;
    }
+   wl_proxy_set_queue((struct wl_proxy *)buffer, dri2_surf->wl_queue);
+   if (wl_display_roundtrip_queue(dri2_dpy->wl_dpy, dri2_surf->wl_queue) < 0) {
+      struct xv6_fb_gpu_bo_destroy destroy = { .handle = bo.handle };
+      wl_buffer_destroy(buffer);
+      ioctl(fb_fd, XV6_FB_GPU_BO_DESTROY, &destroy);
+      munmap((void *)(uintptr_t)bo.addr, (size_t)bo.size);
+      close(fb_fd);
+      return EGL_FALSE;
+   }
 
    slot->data = (void *)(uintptr_t)bo.addr;
    slot->data_size = (int)bo.size;
