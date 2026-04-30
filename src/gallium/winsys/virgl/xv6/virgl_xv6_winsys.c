@@ -603,7 +603,9 @@ virgl_xv6_winsys_create(void)
    if (!xws)
       return NULL;
 
-   xws->fd = open("/dev/fb0", O_RDWR);
+   xws->fd = open("/dev/gpu0", O_RDWR);
+   if (xws->fd < 0)
+      xws->fd = open("/dev/fb0", O_RDWR);
    if (xws->fd < 0)
       goto fail;
 
