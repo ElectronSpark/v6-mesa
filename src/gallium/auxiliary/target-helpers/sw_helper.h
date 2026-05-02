@@ -45,7 +45,8 @@ sw_screen_create_named(struct sw_winsys *winsys, const struct pipe_screen_config
 #endif
 
 #if defined(GALLIUM_VIRGL)
-   if (screen == NULL && strcmp(driver, "virpipe") == 0) {
+   if (screen == NULL &&
+       (strcmp(driver, "virgl") == 0 || strcmp(driver, "virpipe") == 0)) {
       struct virgl_winsys *vws;
       vws = virgl_xv6_winsys_create();
       if (!vws)

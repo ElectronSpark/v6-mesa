@@ -32,6 +32,7 @@
 #define FB_GPU_VIRGL_RESOURCE_DESTROY 0x461F
 #define FB_GPU_VIRGL_TRANSFER_TO_HOST 0x4620
 #define FB_GPU_VIRGL_TRANSFER_FROM_HOST 0x4621
+#define FB_GPU_VIRGL_RESOURCE_EXPORT_FD 0x4628
 #define FB_GPU_VIRGL_FENCE_WAIT 0x1
 
 struct fb_gpu_virgl_ctx {
@@ -85,6 +86,18 @@ struct fb_gpu_virgl_resource_create {
 struct fb_gpu_virgl_resource_destroy {
    uint32_t resource_id;
    uint32_t flags;
+};
+
+struct fb_gpu_virgl_resource_export_fd {
+   uint32_t resource_id;
+   uint32_t flags;
+   int32_t fd;
+   uint32_t handle;
+   uint32_t width;
+   uint32_t height;
+   uint32_t pitch;
+   uint32_t reserved;
+   uint64_t size;
 };
 
 struct fb_gpu_virgl_transfer {
@@ -538,6 +551,45 @@ virgl_xv6_resource_get_storage_size(struct virgl_winsys *vws,
    return res->size;
 }
 
+static bool
+virgl_xv6_resource_get_handle(struct virgl_winsys *vws,
+                              struct virgl_hw_res *res, uint32_t stride,
+                              struct winsys_handle *whandle)
+{
+   struct virgl_xv6_winsys *xws = virgl_xv6_winsys(vws);
+   struct fb_gpu_virgl_resource_export_fd export_fd;
+
+   if (!res || !whandle)
+      return false;
+
+   if (whandle->type == WINSYS_HANDLE_TYPE_KMS ||
+       whandle->type == WINSYS_HANDLE_TYPE_SHARED) {
+      whandle->handle = res->res_handle;
+   } else if (whandle->type == WINSYS_HANDLE_TYPE_FD) {
+      memset(&export_fd, 0, sizeof(export_fd));
+      export_fd.resource_id = res->res_handle;
+      if (ioctl(xws->fd, FB_GPU_VIRGL_RESOURCE_EXPORT_FD, &export_fd) < 0 ||
+          export_fd.fd < 0)
+         return false;
+      whandle->handle = (unsigned)export_fd.fd;
+      whandle->size = export_fd.size;
+      if (export_fd.pitch)
+         stride = export_fd.pitch;
+   } else {
+      return false;
+   }
+
+   whandle->stride = stride;
+   whandle->offset = 0;
+   whandle->modifier = 0;
+   if (virgl_xv6_debug_enabled())
+      fprintf(stderr,
+              "virgl-xv6: export resource id=%u type=%u handle=%u stride=%u size=%lu\n",
+              res->res_handle, whandle->type, whandle->handle, stride,
+              (unsigned long)whandle->size);
+   return true;
+}
+
 static void
 virgl_xv6_resource_set_type(struct virgl_winsys *vws,
                             struct virgl_hw_res *res,
@@ -628,7 +680,7 @@ virgl_xv6_winsys_create(void)
    xws->base.resource_is_busy = virgl_xv6_resource_is_busy;
    xws->base.resource_create_from_handle = NULL;
    xws->base.resource_set_type = virgl_xv6_resource_set_type;
-   xws->base.resource_get_handle = NULL;
+   xws->base.resource_get_handle = virgl_xv6_resource_get_handle;
    xws->base.resource_get_storage_size = virgl_xv6_resource_get_storage_size;
    xws->base.cmd_buf_create = virgl_xv6_cmd_buf_create;
    xws->base.cmd_buf_destroy = virgl_xv6_cmd_buf_destroy;

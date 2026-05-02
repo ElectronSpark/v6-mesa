@@ -30,6 +30,7 @@
 
 #include "util/libdrm.h"
 #include "git_sha1.h"
+#include "util/detect_os.h"
 #include "GL/mesa_glinterop.h"
 #include "mesa_interface.h"
 #include "util/disk_cache.h"
@@ -58,6 +59,8 @@
 #include "loader_dri_helper.h"
 
 #include "drm-uapi/drm_fourcc.h"
+
+#include <stdio.h>
 
 struct dri2_buffer
 {
@@ -1758,8 +1761,28 @@ dri2_init_screen(struct dri_screen *screen, bool driver_name_is_inferred)
    screen->can_share_buffer = true;
 
 #ifdef HAVE_LIBDRM
-   if (pipe_loader_drm_probe_fd(&screen->dev, screen->fd, false))
+#if DETECT_OS_XV6
+   fprintf(stderr, "xv6-mesa: dri2_init_screen fd=%d inferred=%d\n",
+           screen->fd, driver_name_is_inferred);
+#endif
+   if (pipe_loader_drm_probe_fd(&screen->dev, screen->fd, false)) {
+#if DETECT_OS_XV6
+      fprintf(stderr, "xv6-mesa: dri2 probe ok dev=%p driver=%s\n",
+              (void *)screen->dev,
+              screen->dev && screen->dev->driver_name ?
+              screen->dev->driver_name : "(null)");
+#endif
       pscreen = pipe_loader_create_screen(screen->dev, driver_name_is_inferred);
+#if DETECT_OS_XV6
+      fprintf(stderr, "xv6-mesa: dri2 create_screen pscreen=%p\n",
+              (void *)pscreen);
+#endif
+   }
+#if DETECT_OS_XV6
+   else {
+      fprintf(stderr, "xv6-mesa: dri2 probe failed fd=%d\n", screen->fd);
+   }
+#endif
 #endif
 
    return pscreen;

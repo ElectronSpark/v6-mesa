@@ -43,6 +43,7 @@
 #include "pipe_loader_priv.h"
 
 #include "util/log.h"
+#include "util/detect_os.h"
 #include "util/os_file.h"
 #include "util/u_memory.h"
 #include "util/u_debug.h"
@@ -120,16 +121,32 @@ pipe_loader_drm_probe_fd_nodup(struct pipe_loader_device **dev, int fd, bool zin
 {
    struct pipe_loader_drm_device *ddev = CALLOC_STRUCT(pipe_loader_drm_device);
    int vendor_id, chip_id;
+#if DETECT_OS_XV6
+   int node_type;
+#endif
 
    if (!ddev)
       return false;
+
+#if DETECT_OS_XV6
+   node_type = drmGetNodeTypeFromFd(fd);
+   fprintf(stderr, "xv6-mesa: pipe_loader probe fd=%d zink=%d node=%d\n",
+           fd, zink, node_type);
+#endif
 
    if (loader_get_pci_id_for_fd(fd, &vendor_id, &chip_id)) {
       ddev->base.type = PIPE_LOADER_DEVICE_PCI;
       ddev->base.u.pci.vendor_id = vendor_id;
       ddev->base.u.pci.chip_id = chip_id;
+#if DETECT_OS_XV6
+      fprintf(stderr, "xv6-mesa: pipe_loader pci id %04x:%04x\n",
+              vendor_id, chip_id);
+#endif
    } else {
       ddev->base.type = PIPE_LOADER_DEVICE_PLATFORM;
+#if DETECT_OS_XV6
+      fprintf(stderr, "xv6-mesa: pipe_loader using platform device\n");
+#endif
    }
    ddev->base.ops = &pipe_loader_drm_ops;
    ddev->fd = fd;
@@ -138,6 +155,13 @@ pipe_loader_drm_probe_fd_nodup(struct pipe_loader_device **dev, int fd, bool zin
       ddev->base.driver_name = strdup("zink");
    else
       ddev->base.driver_name = loader_get_driver_for_fd(fd);
+#if DETECT_OS_XV6
+   fprintf(stderr, "xv6-mesa: pipe_loader loader driver=%s\n",
+           ddev->base.driver_name ? ddev->base.driver_name : "(null)");
+   if (!ddev->base.driver_name &&
+       node_type == DRM_NODE_RENDER)
+      ddev->base.driver_name = strdup("virtio_gpu");
+#endif
    if (!ddev->base.driver_name)
       goto fail;
 
@@ -167,6 +191,11 @@ pipe_loader_drm_probe_fd_nodup(struct pipe_loader_device **dev, int fd, bool zin
    }
 
    ddev->dd = get_driver_descriptor(ddev->base.driver_name);
+#if DETECT_OS_XV6
+   fprintf(stderr, "xv6-mesa: pipe_loader descriptor driver=%s dd=%p\n",
+           ddev->base.driver_name ? ddev->base.driver_name : "(null)",
+           (void *)ddev->dd);
+#endif
 
    /* vgem is a virtual device; don't try using it with kmsro */
    if (strcmp(ddev->base.driver_name, "vgem") == 0)
@@ -179,6 +208,21 @@ pipe_loader_drm_probe_fd_nodup(struct pipe_loader_device **dev, int fd, bool zin
    /* Try zink for unknown render nodes */
    if (!ddev->dd && drmGetNodeTypeFromFd(fd) == DRM_NODE_RENDER)
       ddev->dd = get_driver_descriptor("zink");
+#if DETECT_OS_XV6
+   if ((!ddev->dd || strcmp(ddev->base.driver_name, "zink") == 0) &&
+       node_type == DRM_NODE_RENDER) {
+      const struct drm_driver_descriptor *virtio_gpu =
+         get_driver_descriptor("virtio_gpu");
+      if (virtio_gpu) {
+         FREE(ddev->base.driver_name);
+         ddev->base.driver_name = strdup("virtio_gpu");
+         ddev->dd = virtio_gpu;
+      }
+   }
+   fprintf(stderr, "xv6-mesa: pipe_loader final driver=%s dd=%p\n",
+           ddev->base.driver_name ? ddev->base.driver_name : "(null)",
+           (void *)ddev->dd);
+#endif
 
    if (!ddev->dd)
       goto fail;
@@ -187,6 +231,10 @@ pipe_loader_drm_probe_fd_nodup(struct pipe_loader_device **dev, int fd, bool zin
    return true;
 
   fail:
+#if DETECT_OS_XV6
+   fprintf(stderr, "xv6-mesa: pipe_loader probe failed fd=%d driver=%s\n",
+           fd, ddev->base.driver_name ? ddev->base.driver_name : "(null)");
+#endif
    FREE(ddev->base.driver_name);
    FREE(ddev);
    return false;
