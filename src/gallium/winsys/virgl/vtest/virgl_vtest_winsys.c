@@ -755,7 +755,11 @@ virgl_vtest_winsys_wrap(struct sw_winsys *sws)
    if (!vtws)
       return NULL;
 
-   virgl_vtest_connect(vtws);
+   if (virgl_vtest_connect(vtws) < 0) {
+      FREE(vtws);
+      return NULL;
+   }
+
    vtws->sws = sws;
 
    virgl_resource_cache_init(&vtws->cache, CACHE_TIMEOUT_USEC,

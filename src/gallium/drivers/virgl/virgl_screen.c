@@ -984,7 +984,7 @@ virgl_screen_get_fd(struct pipe_screen *pscreen)
 struct pipe_screen *
 virgl_create_screen(struct virgl_winsys *vws, const struct pipe_screen_config *config)
 {
-   struct virgl_screen *screen = CALLOC_STRUCT(virgl_screen);
+   struct virgl_screen *screen;
 
    const char *VIRGL_GLES_EMULATE_BGRA = "gles_emulate_bgra";
    const char *VIRGL_GLES_APPLY_BGRA_DEST_SWIZZLE = "gles_apply_bgra_dest_swizzle";
@@ -992,6 +992,10 @@ virgl_create_screen(struct virgl_winsys *vws, const struct pipe_screen_config *c
    const char *VIRGL_FORMAT_L8_SRGB_ENABLE_READBACK = "format_l8_srgb_enable_readback";
    const char *VIRGL_SHADER_SYNC = "virgl_shader_sync";
 
+   if (!vws)
+      return NULL;
+
+   screen = CALLOC_STRUCT(virgl_screen);
    if (!screen)
       return NULL;
 

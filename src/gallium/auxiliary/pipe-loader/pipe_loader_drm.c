@@ -116,6 +116,21 @@ get_nctx_caps(int fd, struct virgl_renderer_capset_drm *caps)
    return drmIoctl(fd, DRM_IOCTL_VIRTGPU_GET_CAPS, &args);
 }
 
+#if DETECT_OS_XV6
+static bool
+xv6_virtgpu_has_3d(int fd)
+{
+   uint64_t value = 0;
+   struct drm_virtgpu_getparam args = {
+      .param = VIRTGPU_PARAM_3D_FEATURES,
+      .value = (uintptr_t)&value,
+   };
+
+   return drmIoctl(fd, DRM_IOCTL_VIRTGPU_GETPARAM, &args) == 0 &&
+          value != 0;
+}
+#endif
+
 static bool
 pipe_loader_drm_probe_fd_nodup(struct pipe_loader_device **dev, int fd, bool zink)
 {
@@ -159,8 +174,16 @@ pipe_loader_drm_probe_fd_nodup(struct pipe_loader_device **dev, int fd, bool zin
    fprintf(stderr, "xv6-mesa: pipe_loader loader driver=%s\n",
            ddev->base.driver_name ? ddev->base.driver_name : "(null)");
    if (!ddev->base.driver_name &&
-       node_type == DRM_NODE_RENDER)
+       node_type == DRM_NODE_RENDER &&
+       xv6_virtgpu_has_3d(fd))
       ddev->base.driver_name = strdup("virtio_gpu");
+   if (ddev->base.driver_name &&
+       strcmp(ddev->base.driver_name, "virtio_gpu") == 0 &&
+       !xv6_virtgpu_has_3d(fd)) {
+      fprintf(stderr, "xv6-mesa: render node has no virgl, skip virtio_gpu\n");
+      FREE(ddev->base.driver_name);
+      ddev->base.driver_name = NULL;
+   }
 #endif
    if (!ddev->base.driver_name)
       goto fail;
@@ -210,7 +233,8 @@ pipe_loader_drm_probe_fd_nodup(struct pipe_loader_device **dev, int fd, bool zin
       ddev->dd = get_driver_descriptor("zink");
 #if DETECT_OS_XV6
    if ((!ddev->dd || strcmp(ddev->base.driver_name, "zink") == 0) &&
-       node_type == DRM_NODE_RENDER) {
+       node_type == DRM_NODE_RENDER &&
+       xv6_virtgpu_has_3d(fd)) {
       const struct drm_driver_descriptor *virtio_gpu =
          get_driver_descriptor("virtio_gpu");
       if (virtio_gpu) {

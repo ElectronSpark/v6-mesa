@@ -38,6 +38,7 @@
 #include <unistd.h>
 #include "util/libdrm.h"
 #include "drm-uapi/drm_fourcc.h"
+#include "drm-uapi/virtgpu_drm.h"
 #include <sys/mman.h>
 #include <vulkan/vulkan_core.h>
 #include <vulkan/vulkan_wayland.h>
@@ -67,6 +68,7 @@
 #define XV6_FB_GPU_BO_CREATE       0x4614
 #define XV6_FB_GPU_BO_DESTROY      0x4616
 #define XV6_FB_GPU_BO_F_EXPORTABLE 0x1
+#define XV6_DRM_RENDER_NODE "/dev/dri/renderD128"
 
 struct xv6_fb_gpu_bo_create {
    uint32_t width, height, flags, pitch;
@@ -109,6 +111,32 @@ xv6_gpu_buffer_manager_create_buffer(struct wl_proxy *manager, uint32_t handle,
       manager, 0, &wl_buffer_interface, wl_proxy_get_version(manager), 0,
       NULL, handle, width, height, stride, format);
 }
+
+#if DETECT_OS_XV6
+static bool
+xv6_wayland_has_virgl_render_node(void)
+{
+   uint64_t value = 0;
+   struct drm_virtgpu_getparam args = {
+      .param = VIRTGPU_PARAM_3D_FEATURES,
+      .value = (uintptr_t)&value,
+   };
+   int fd = open(XV6_DRM_RENDER_NODE, O_RDWR | O_CLOEXEC);
+   bool has_virgl;
+
+   if (fd < 0) {
+      fprintf(stderr, "xv6-mesa: wayland virgl probe open %s failed errno=%d\n",
+              XV6_DRM_RENDER_NODE, errno);
+      return false;
+   }
+   has_virgl = drmIoctl(fd, DRM_IOCTL_VIRTGPU_GETPARAM, &args) == 0 &&
+               value != 0;
+   fprintf(stderr, "xv6-mesa: wayland virgl probe fd=%d value=%llu has=%d errno=%d\n",
+           fd, (unsigned long long)value, has_virgl, errno);
+   close(fd);
+   return has_virgl;
+}
+#endif
 
 /*
  * The index of entries in this table is used as a bitmask in
@@ -2723,9 +2751,20 @@ dri2_initialize_wayland_drm_extensions(struct dri2_egl_display *dri2_dpy)
 }
 
 static EGLBoolean
+dri2_initialize_wayland_swrast(_EGLDisplay *disp);
+
+static EGLBoolean
 dri2_initialize_wayland_drm(_EGLDisplay *disp)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
+
+#if DETECT_OS_XV6
+   if (!xv6_wayland_has_virgl_render_node()) {
+      fprintf(stderr, "xv6-mesa: wayland selecting swrast without virgl\n");
+      return dri2_initialize_wayland_swrast(disp);
+   }
+   fprintf(stderr, "xv6-mesa: wayland selecting drm with virgl\n");
+#endif
 
    if (dri2_wl_formats_init(&dri2_dpy->formats) < 0)
       goto cleanup;

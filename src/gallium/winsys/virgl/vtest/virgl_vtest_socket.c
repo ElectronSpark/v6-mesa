@@ -218,6 +218,11 @@ int virgl_vtest_connect(struct virgl_vtest_winsys *vws)
       }
    } while (ret == -EINTR);
 
+   if (ret) {
+      close(sock);
+      return -1;
+   }
+
    vws->sock_fd = sock;
    virgl_vtest_send_init(vws);
    vws->protocol_version = virgl_vtest_negotiate_version(vws, VTEST_PROTOCOL_VERSION);
@@ -594,4 +599,3 @@ virgl_vtest_send_create_blob(struct virgl_vtest_winsys *vws,
 
    return res_id;
 }
-
