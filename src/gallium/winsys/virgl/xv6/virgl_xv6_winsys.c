@@ -19,6 +19,7 @@
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
 #include "util/u_thread.h"
+#include "virtio-gpu/virgl_hw.h"
 #include "virgl/virgl_winsys.h"
 #include "virgl_resource_cache.h"
 #include "virgl_xv6_public.h"
@@ -494,6 +495,14 @@ virgl_xv6_get_caps(struct virgl_winsys *vws, struct virgl_drm_caps *caps)
    req.size = sizeof(caps->caps);
 
    int ret = ioctl(xws->fd, FB_GPU_VIRGL_GET_CAPS, &req);
+   /*
+    * xv6 does not enable virgl encoded transfers.  Advertising bidirectional
+    * copy-transfer support lets Mesa allocate texture resources through the
+    * staging path anyway, and WebKit's compositor later dereferences the
+    * uninitialized staging manager.  Keep regular virgl transfers enabled.
+    */
+   caps->caps.v2.capability_bits_v2 &=
+      ~VIRGL_CAP_V2_COPY_TRANSFER_BOTH_DIRECTIONS;
    if (virgl_xv6_debug_enabled())
       fprintf(stderr, "virgl-xv6: caps ret=%d id=%u version=%u size=%u\n",
               ret, req.capset_id, req.capset_version, req.size);

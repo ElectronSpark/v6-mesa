@@ -1294,7 +1294,16 @@ virgl_drm_winsys_create(int drmFD)
    qdws->base.get_caps = virgl_drm_get_caps;
    qdws->base.get_fd = virgl_drm_winsys_get_fd;
    qdws->base.supports_fences =  drm_version >= VIRGL_DRM_VERSION_FENCE_FD;
+#ifdef DETECT_OS_XV6
+   /*
+    * xv6 exposes a small virtio-gpu render-node facade.  Regular virgl
+    * transfers work, but the encoded copy-transfer staging path can hand Mesa
+    * a partially initialized staging manager and crash WebKit's compositor.
+    */
+   qdws->base.supports_encoded_transfers = 0;
+#else
    qdws->base.supports_encoded_transfers = 1;
+#endif
 
    qdws->base.supports_coherent = params[param_resource_blob].value &&
                                   params[param_host_visible].value;
