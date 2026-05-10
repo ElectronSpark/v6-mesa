@@ -173,6 +173,14 @@ pipe_loader_drm_probe_fd_nodup(struct pipe_loader_device **dev, int fd, bool zin
 #if DETECT_OS_XV6
    fprintf(stderr, "xv6-mesa: pipe_loader loader driver=%s\n",
            ddev->base.driver_name ? ddev->base.driver_name : "(null)");
+   if (ddev->base.driver_name &&
+       (strcmp(ddev->base.driver_name, "virgl") == 0 ||
+        strcmp(ddev->base.driver_name, "virpipe") == 0) &&
+       node_type == DRM_NODE_RENDER &&
+       xv6_virtgpu_has_3d(fd)) {
+      FREE(ddev->base.driver_name);
+      ddev->base.driver_name = strdup("virtio_gpu");
+   }
    if (!ddev->base.driver_name &&
        node_type == DRM_NODE_RENDER &&
        xv6_virtgpu_has_3d(fd))

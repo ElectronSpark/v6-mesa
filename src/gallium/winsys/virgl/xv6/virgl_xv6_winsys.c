@@ -496,11 +496,12 @@ virgl_xv6_get_caps(struct virgl_winsys *vws, struct virgl_drm_caps *caps)
 
    int ret = ioctl(xws->fd, FB_GPU_VIRGL_GET_CAPS, &req);
    /*
-    * xv6 does not enable virgl encoded transfers.  Advertising bidirectional
-    * copy-transfer support lets Mesa allocate texture resources through the
-    * staging path anyway, and WebKit's compositor later dereferences the
-    * uninitialized staging manager.  Keep regular virgl transfers enabled.
+    * xv6 does not enable virgl encoded transfers. Advertising any copy-transfer
+    * capability lets Mesa allocate texture resources through the staging path;
+    * the staging manager is initialized only when encoded transfers are enabled.
+    * Keep regular virgl transfers enabled, but hide copy-transfer staging.
     */
+   caps->caps.v2.capability_bits &= ~VIRGL_CAP_COPY_TRANSFER;
    caps->caps.v2.capability_bits_v2 &=
       ~VIRGL_CAP_V2_COPY_TRANSFER_BOTH_DIRECTIONS;
    if (virgl_xv6_debug_enabled())
