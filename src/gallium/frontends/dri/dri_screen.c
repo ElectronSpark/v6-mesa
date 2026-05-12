@@ -632,14 +632,20 @@ dri_init_screen(struct dri_screen *screen,
    else
       screen->target = PIPE_TEXTURE_RECT;
 
+   fprintf(stderr, "xv6-mesa: dri_init_screen options begin\n");
    dri_init_options(screen);
 
+   fprintf(stderr, "xv6-mesa: dri_init_screen query versions begin\n");
    st_api_query_versions(&screen->base,
                          &screen->options,
                          &screen->max_gl_core_version,
                          &screen->max_gl_compat_version,
                          &screen->max_gl_es1_version,
                          &screen->max_gl_es2_version);
+   fprintf(stderr,
+           "xv6-mesa: dri_init_screen query versions done core=%d compat=%d es1=%d es2=%d\n",
+           screen->max_gl_core_version, screen->max_gl_compat_version,
+           screen->max_gl_es1_version, screen->max_gl_es2_version);
 
    screen->throttle = pscreen->caps.throttle;
    if (pscreen->caps.device_protected_context)
@@ -655,6 +661,7 @@ dri_init_screen(struct dri_screen *screen,
       screen->has_dmabuf = true;
 #endif
 
+   fprintf(stderr, "xv6-mesa: dri_init_screen fill modes begin\n");
    return dri_fill_in_modes(screen);
 }
 

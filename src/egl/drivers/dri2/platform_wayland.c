@@ -32,6 +32,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -57,6 +58,13 @@
 #include "dri_screen.h"
 #include "dri_util.h"
 #include <loader_wayland_helper.h>
+
+static void
+xv6_mesa_log(const char *msg)
+{
+   fprintf(stderr, "xv6-mesa: %s\n", msg);
+   fflush(stderr);
+}
 
 #include "linux-dmabuf-unstable-v1-client-protocol.h"
 #ifdef HAVE_BIND_WL_DISPLAY
@@ -773,6 +781,7 @@ static _EGLSurface *
 dri2_wl_create_window_surface(_EGLDisplay *disp, _EGLConfig *conf,
                               void *native_window, const EGLint *attrib_list)
 {
+   xv6_mesa_log("wl create_window_surface begin");
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_config *dri2_conf = dri2_egl_config(conf);
    struct wl_egl_window *window = native_window;
@@ -782,29 +791,35 @@ dri2_wl_create_window_surface(_EGLDisplay *disp, _EGLConfig *conf,
    const struct dri_config *config;
 
    if (!window) {
+      xv6_mesa_log("wl create_window_surface no native window");
       _eglError(EGL_BAD_NATIVE_WINDOW, "dri2_create_surface");
       return NULL;
    }
 
    if (window->driver_private) {
+      xv6_mesa_log("wl create_window_surface native window busy");
       _eglError(EGL_BAD_ALLOC, "dri2_create_surface");
       return NULL;
    }
 
    dri2_surf = calloc(1, sizeof *dri2_surf);
    if (!dri2_surf) {
+      xv6_mesa_log("wl create_window_surface calloc failed");
       _eglError(EGL_BAD_ALLOC, "dri2_create_surface");
       return NULL;
    }
 
+   xv6_mesa_log("wl create_window_surface init surface begin");
    if (!dri2_init_surface(&dri2_surf->base, disp, EGL_WINDOW_BIT, conf,
                           attrib_list, false, native_window))
       goto cleanup_surf;
+   xv6_mesa_log("wl create_window_surface init surface done");
 
    config = dri2_get_dri_config(dri2_conf, EGL_WINDOW_BIT,
                                 dri2_surf->base.GLColorspace);
 
    if (!config) {
+      xv6_mesa_log("wl create_window_surface no config");
       _eglError(EGL_BAD_MATCH,
                 "Unsupported surfacetype/colorspace configuration");
       goto cleanup_surf;
@@ -845,9 +860,11 @@ dri2_wl_create_window_surface(_EGLDisplay *disp, _EGLConfig *conf,
    dri2_surf->wl_queue = wl_display_create_queue_with_name(dri2_dpy->wl_dpy,
                                                            "mesa egl surface queue");
    if (!dri2_surf->wl_queue) {
+      xv6_mesa_log("wl create_window_surface queue failed");
       _eglError(EGL_BAD_ALLOC, "dri2_create_surface");
       goto cleanup_surf;
    }
+   xv6_mesa_log("wl create_window_surface queue done");
 
 #ifdef HAVE_BIND_WL_DISPLAY
    if (dri2_dpy->wl_drm) {
@@ -863,16 +880,20 @@ dri2_wl_create_window_surface(_EGLDisplay *disp, _EGLConfig *conf,
 
    dri2_surf->wl_dpy_wrapper = wl_proxy_create_wrapper(dri2_dpy->wl_dpy);
    if (!dri2_surf->wl_dpy_wrapper) {
+      xv6_mesa_log("wl create_window_surface display wrapper failed");
       _eglError(EGL_BAD_ALLOC, "dri2_create_surface");
       goto cleanup_drm;
    }
    wl_proxy_set_queue((struct wl_proxy *)dri2_surf->wl_dpy_wrapper,
                       dri2_surf->wl_queue);
 
+   xv6_mesa_log("wl create_window_surface get wayland surface begin");
    if (!get_wayland_surface(dri2_surf, window)) {
+      xv6_mesa_log("wl create_window_surface get wayland surface failed");
       _eglError(EGL_BAD_ALLOC, "dri2_create_surface");
       goto cleanup_dpy_wrapper;
    }
+   xv6_mesa_log("wl create_window_surface get wayland surface done");
 
    if (dri2_dpy->wp_presentation) {
       loader_wayland_wrap_presentation(&dri2_surf->wayland_presentation,
@@ -911,8 +932,10 @@ dri2_wl_create_window_surface(_EGLDisplay *disp, _EGLConfig *conf,
          goto cleanup_surf_wrapper;
       }
 
+      xv6_mesa_log("wl create_window_surface dmabuf feedback roundtrip begin");
       if (roundtrip(dri2_dpy) < 0)
          goto cleanup_dmabuf_feedback;
+      xv6_mesa_log("wl create_window_surface dmabuf feedback roundtrip done");
    }
 
    dri2_surf->wl_win = window;
@@ -921,10 +944,13 @@ dri2_wl_create_window_surface(_EGLDisplay *disp, _EGLConfig *conf,
    if (!dri2_dpy->swrast_not_kms)
       dri2_surf->wl_win->resize_callback = resize_callback;
 
+   xv6_mesa_log("wl create_window_surface create drawable begin");
    if (!dri2_create_drawable(dri2_dpy, config, dri2_surf, dri2_surf))
       goto cleanup_dmabuf_feedback;
+   xv6_mesa_log("wl create_window_surface create drawable done");
 
    dri2_surf->base.SwapInterval = dri2_dpy->default_swap_interval;
+   xv6_mesa_log("wl create_window_surface done");
 
    return &dri2_surf->base;
 
@@ -1903,11 +1929,15 @@ throttle(struct dri2_egl_display *dri2_dpy,
          struct dri2_egl_surface *dri2_surf)
 {
    MESA_TRACE_FUNC();
+   static unsigned throttle_logs;
 
-   while (dri2_surf->throttle_callback != NULL)
+   while (dri2_surf->throttle_callback != NULL) {
+      if (throttle_logs++ < 8)
+         xv6_mesa_log("wl throttle waiting");
       if (loader_wayland_dispatch(dri2_dpy->wl_dpy, dri2_surf->wl_queue, NULL) ==
           -1)
          return -1;
+   }
 
    return 0;
 }
@@ -1919,12 +1949,16 @@ static EGLBoolean
 dri2_wl_swap_buffers_with_damage(_EGLDisplay *disp, _EGLSurface *draw,
                                  const EGLint *rects, EGLint n_rects)
 {
+   static unsigned swap_logs;
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_surface *dri2_surf = dri2_egl_surface(draw);
    struct mesa_trace_flow flow = { 0 };
 
    if (!dri2_surf->wl_win)
       return _eglError(EGL_BAD_NATIVE_WINDOW, "dri2_swap_buffers");
+
+   if (swap_logs++ < 8)
+      xv6_mesa_log("wl swap_buffers begin");
 
    if (dri2_surf->back)
       flow = dri2_surf->back->wayland_buffer.flow;
@@ -2037,6 +2071,8 @@ dri2_wl_swap_buffers_with_damage(_EGLDisplay *disp, _EGLSurface *draw,
    }
 
    wl_display_flush(dri2_dpy->wl_dpy);
+   if (swap_logs <= 8)
+      xv6_mesa_log("wl swap_buffers done");
 
    return EGL_TRUE;
 }
@@ -2460,13 +2496,17 @@ static const __DRIextension *dri2_loader_extensions[] = {
 static EGLBoolean
 dri2_wl_surface_throttle(struct dri2_egl_surface *dri2_surf)
 {
+   static unsigned throttle_logs;
    struct dri2_egl_display *dri2_dpy =
       dri2_egl_display(dri2_surf->base.Resource.Display);
 
-   while (dri2_surf->throttle_callback != NULL)
+   while (dri2_surf->throttle_callback != NULL) {
+      if (throttle_logs++ < 8)
+         xv6_mesa_log("wl swrast throttle waiting");
       if (loader_wayland_dispatch(dri2_dpy->wl_dpy, dri2_surf->wl_queue, NULL) ==
           -1)
          return EGL_FALSE;
+   }
 
    if (dri2_surf->base.SwapInterval > 0) {
       dri2_surf->throttle_callback =
@@ -2761,6 +2801,8 @@ dri2_initialize_wayland_drm(_EGLDisplay *disp)
 #if DETECT_OS_XV6
    if (!xv6_wayland_has_virgl_render_node()) {
       fprintf(stderr, "xv6-mesa: wayland selecting swrast without virgl\n");
+      disp->Options.ForceSoftware = EGL_TRUE;
+      disp->Options.Zink = EGL_FALSE;
       return dri2_initialize_wayland_swrast(disp);
    }
    fprintf(stderr, "xv6-mesa: wayland selecting drm with virgl\n");
@@ -3263,10 +3305,14 @@ static EGLBoolean
 dri2_wl_swrast_swap_buffers_with_damage(_EGLDisplay *disp, _EGLSurface *draw,
                                         const EGLint *rects, EGLint n_rects)
 {
+   static unsigned swrast_swap_logs;
    struct dri2_egl_surface *dri2_surf = dri2_egl_surface(draw);
 
    if (!dri2_surf->wl_win)
       return _eglError(EGL_BAD_NATIVE_WINDOW, "dri2_swap_buffers");
+
+   if (swrast_swap_logs++ < 12)
+      xv6_mesa_log("wl swrast swap begin");
 
    (void)swrast_update_buffers(dri2_surf);
 
@@ -3304,6 +3350,8 @@ dri2_wl_swrast_swap_buffers_with_damage(_EGLDisplay *disp, _EGLSurface *draw,
    dri2_surf->back = NULL;
 
    dri2_wl_swrast_commit_backbuffer(dri2_surf);
+   if (swrast_swap_logs <= 12)
+      xv6_mesa_log("wl swrast swap done");
    return EGL_TRUE;
 }
 
@@ -3406,63 +3454,100 @@ static EGLBoolean
 dri2_initialize_wayland_swrast(_EGLDisplay *disp)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
+   xv6_mesa_log("wayland swrast init begin");
 
+   xv6_mesa_log("wayland swrast formats init begin");
    if (dri2_wl_formats_init(&dri2_dpy->formats) < 0)
       goto cleanup;
+   xv6_mesa_log("wayland swrast formats init done");
 
    if (disp->PlatformDisplay == NULL) {
+      xv6_mesa_log("wayland swrast wl_display_connect begin");
       dri2_dpy->wl_dpy = wl_display_connect(NULL);
       if (dri2_dpy->wl_dpy == NULL)
          goto cleanup;
       dri2_dpy->own_device = true;
+      xv6_mesa_log("wayland swrast wl_display_connect done");
    } else {
       dri2_dpy->wl_dpy = disp->PlatformDisplay;
+      xv6_mesa_log("wayland swrast using platform display");
    }
 
+   xv6_mesa_log("wayland swrast display queue begin");
    dri2_dpy->wl_queue = wl_display_create_queue_with_name(dri2_dpy->wl_dpy,
                                                           "mesa egl swrast display queue");
+   xv6_mesa_log("wayland swrast display queue done");
 
+   xv6_mesa_log("wayland swrast display wrapper begin");
    dri2_dpy->wl_dpy_wrapper = wl_proxy_create_wrapper(dri2_dpy->wl_dpy);
    if (dri2_dpy->wl_dpy_wrapper == NULL)
       goto cleanup;
+   xv6_mesa_log("wayland swrast display wrapper done");
 
    wl_proxy_set_queue((struct wl_proxy *)dri2_dpy->wl_dpy_wrapper,
                       dri2_dpy->wl_queue);
 
-   if (dri2_dpy->own_device)
+   if (dri2_dpy->own_device) {
+      xv6_mesa_log("wayland swrast dispatch pending begin");
       wl_display_dispatch_pending(dri2_dpy->wl_dpy);
+      xv6_mesa_log("wayland swrast dispatch pending done");
+   }
 
+   xv6_mesa_log("wayland swrast registry begin");
    dri2_dpy->wl_registry = wl_display_get_registry(dri2_dpy->wl_dpy_wrapper);
    wl_registry_add_listener(dri2_dpy->wl_registry, &registry_listener_swrast,
                             dri2_dpy);
+   xv6_mesa_log("wayland swrast registry done");
 
+   xv6_mesa_log("wayland swrast roundtrip 1 begin");
    if (roundtrip(dri2_dpy) < 0 || dri2_dpy->wl_shm == NULL)
       goto cleanup;
+   xv6_mesa_log("wayland swrast roundtrip 1 done");
 
+   xv6_mesa_log("wayland swrast roundtrip 2 begin");
    if (roundtrip(dri2_dpy) < 0 ||
        !BITSET_TEST_RANGE(dri2_dpy->formats.formats_bitmap, 0,
                           dri2_dpy->formats.num_formats))
       goto cleanup;
+   xv6_mesa_log("wayland swrast roundtrip 2 done");
 
    dri2_dpy->driver_name = strdup(disp->Options.Zink ? "zink" : "swrast");
    dri2_detect_swrast_kopper(disp);
+   fprintf(stderr,
+           "xv6-mesa: wayland swrast driver=%s swrast=%d swrast_not_kms=%d kopper=%d formats=%u\n",
+           dri2_dpy->driver_name ? dri2_dpy->driver_name : "(null)",
+           dri2_dpy->swrast, dri2_dpy->swrast_not_kms, dri2_dpy->kopper,
+           dri2_dpy->formats.num_formats);
 
    dri2_dpy->loader_extensions = dri2_dpy->kopper ? kopper_loader_extensions
                                                   : swrast_loader_extensions;
 
-   if (!dri2_create_screen(disp))
-      goto cleanup;
-
-   if (!dri2_setup_device(disp, disp->Options.ForceSoftware)) {
-      _eglError(EGL_NOT_INITIALIZED, "DRI2: failed to setup EGLDevice");
+   xv6_mesa_log("wayland swrast create screen begin");
+   if (!dri2_create_screen(disp)) {
+      fprintf(stderr, "xv6-mesa: wayland swrast dri2_create_screen failed\n");
       goto cleanup;
    }
+   xv6_mesa_log("wayland swrast create screen done");
 
+   xv6_mesa_log("wayland swrast setup device begin");
+   if (!dri2_setup_device(disp, disp->Options.ForceSoftware)) {
+      _eglError(EGL_NOT_INITIALIZED, "DRI2: failed to setup EGLDevice");
+      fprintf(stderr, "xv6-mesa: wayland swrast dri2_setup_device failed\n");
+      goto cleanup;
+   }
+   xv6_mesa_log("wayland swrast setup device done");
+
+   xv6_mesa_log("wayland swrast setup screen begin");
    dri2_setup_screen(disp);
+   xv6_mesa_log("wayland swrast setup screen done");
 
+   xv6_mesa_log("wayland swrast setup swap interval begin");
    dri2_wl_setup_swap_interval(disp);
+   xv6_mesa_log("wayland swrast setup swap interval done");
 
+   xv6_mesa_log("wayland swrast add configs begin");
    dri2_wl_add_configs_for_visuals(disp);
+   xv6_mesa_log("wayland swrast add configs done");
 
 #ifdef HAVE_BIND_WL_DISPLAY
    if (disp->Options.Zink && dri2_dpy->fd_render_gpu >= 0 &&
@@ -3479,9 +3564,11 @@ dri2_initialize_wayland_swrast(_EGLDisplay *disp)
    dri2_dpy->vtbl = dri2_dpy->kopper ? &dri2_wl_kopper_display_vtbl
                                      : &dri2_wl_swrast_display_vtbl;
 
+   xv6_mesa_log("wayland swrast init done");
    return EGL_TRUE;
 
 cleanup:
+   xv6_mesa_log("wayland swrast init cleanup");
    return EGL_FALSE;
 }
 

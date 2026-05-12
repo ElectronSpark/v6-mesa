@@ -34,6 +34,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <assert.h>
+#include <fcntl.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include <dlfcn.h>
@@ -443,11 +444,17 @@ gbm_dri_bo_write(struct gbm_bo *_bo, const void *buf, size_t count)
 static int
 gbm_dri_bo_get_fd(struct gbm_bo *_bo)
 {
+   struct gbm_dri_device *dri = gbm_dri_device(_bo->gbm);
    struct gbm_dri_bo *bo = gbm_dri_bo(_bo);
    int fd;
 
-   if (bo->image == NULL)
-      return -1;
+   if (bo->image == NULL) {
+      if (drmPrimeHandleToFD(dri->base.v0.fd, bo->handle,
+                             DRM_CLOEXEC | DRM_RDWR, &fd) != 0)
+         return -1;
+
+      return fd;
+   }
 
    if (!dri2_query_image(bo->image, __DRI_IMAGE_ATTRIB_FD, &fd))
       return -1;
@@ -529,8 +536,10 @@ gbm_dri_bo_get_plane_fd(struct gbm_bo *_bo, int plane)
       return -1;
    }
 
-   /* dumb BOs can only utilize non-planar formats */
    if (!bo->image) {
+      if (plane == 0)
+         return gbm_dri_bo_get_fd(_bo);
+
       errno = EINVAL;
       return -1;
    }
@@ -840,6 +849,12 @@ create_dumb(struct gbm_device *gbm,
       format == GBM_FORMAT_ARGB8888;
    is_scanout = (usage & GBM_BO_USE_SCANOUT) != 0 &&
       (format == GBM_FORMAT_XRGB8888 || format == GBM_FORMAT_XBGR8888);
+#if DETECT_OS_XV6
+   if (!is_cursor && !is_scanout &&
+       (usage & (GBM_BO_USE_RENDERING | GBM_BO_USE_WRITE | GBM_BO_USE_LINEAR)) &&
+       (format == GBM_FORMAT_XRGB8888 || format == GBM_FORMAT_ARGB8888))
+      is_scanout = true;
+#endif
    if (!is_cursor && !is_scanout) {
       errno = EINVAL;
       return NULL;

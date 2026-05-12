@@ -6,6 +6,7 @@
 #include "util/u_debug.h"
 #include "target-helpers/sw_helper_public.h"
 #include "frontend/sw_winsys.h"
+#include <stdio.h>
 
 
 /* Helper function to choose and instantiate one of the software rasterizers:
@@ -92,6 +93,8 @@ sw_screen_create_vk(struct sw_winsys *winsys, const struct pipe_screen_config *c
 
    for (unsigned i = 0; i < ARRAY_SIZE(drivers); i++) {
       struct pipe_screen *screen = sw_screen_create_named(winsys, config, drivers[i]);
+      fprintf(stderr, "xv6-mesa: sw_screen candidate='%s' screen=%p\n",
+              drivers[i], (void *)screen);
       if (screen)
          return screen;
       /* If the env var is set, don't keep trying things */

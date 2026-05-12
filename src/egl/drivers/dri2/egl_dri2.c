@@ -81,6 +81,13 @@
 
 #define NUM_ATTRIBS 16
 
+static void
+xv6_mesa_log(const char *msg)
+{
+   fprintf(stderr, "xv6-mesa: %s\n", msg);
+   fflush(stderr);
+}
+
 static const enum pipe_format dri2_pbuffer_visuals[] = {
    PIPE_FORMAT_R16G16B16A16_FLOAT,
    PIPE_FORMAT_R16G16B16X16_FLOAT,
@@ -1184,6 +1191,7 @@ static _EGLContext *
 dri2_create_context(_EGLDisplay *disp, _EGLConfig *conf,
                     _EGLContext *share_list, const EGLint *attrib_list)
 {
+   xv6_mesa_log("egl create_context begin");
    struct dri2_egl_context *dri2_ctx;
    struct dri2_egl_display *dri2_dpy = dri2_egl_display_lock(disp);
    struct dri2_egl_context *dri2_ctx_shared = dri2_egl_context(share_list);
@@ -1197,12 +1205,15 @@ dri2_create_context(_EGLDisplay *disp, _EGLConfig *conf,
 
    dri2_ctx = malloc(sizeof *dri2_ctx);
    if (!dri2_ctx) {
+      xv6_mesa_log("egl create_context malloc failed");
       dri2_egl_error_unlock(dri2_dpy, EGL_BAD_ALLOC, "eglCreateContext");
       return NULL;
    }
 
+   xv6_mesa_log("egl create_context init begin");
    if (!_eglInitContext(&dri2_ctx->base, disp, conf, share_list, attrib_list))
       goto cleanup;
+   xv6_mesa_log("egl create_context init done");
 
    switch (dri2_ctx->base.ClientAPI) {
    case EGL_OPENGL_ES_API:
@@ -1253,9 +1264,11 @@ dri2_create_context(_EGLDisplay *disp, _EGLConfig *conf,
    } else
       dri_config = NULL;
 
+   xv6_mesa_log("egl create_context fill attribs begin");
    if (!dri2_fill_context_attribs(dri2_ctx, dri2_dpy, ctx_attribs,
                                   &num_attribs))
       goto cleanup;
+   xv6_mesa_log("egl create_context fill attribs done");
 
    bool thread_safe = true;
 
@@ -1273,19 +1286,25 @@ dri2_create_context(_EGLDisplay *disp, _EGLConfig *conf,
    }
 #endif
 
+   xv6_mesa_log("egl create_context driCreateContextAttribs begin");
    dri2_ctx->dri_context = driCreateContextAttribs(
       dri2_dpy->dri_screen_render_gpu, api, dri_config, shared, num_attribs / 2,
       ctx_attribs, &error, dri2_ctx, thread_safe);
+   xv6_mesa_log("egl create_context driCreateContextAttribs done");
    dri2_create_context_attribs_error(error);
 
-   if (!dri2_ctx->dri_context)
+   if (!dri2_ctx->dri_context) {
+      xv6_mesa_log("egl create_context no dri context");
       goto cleanup;
+   }
 
    mtx_unlock(&dri2_dpy->lock);
 
+   xv6_mesa_log("egl create_context done");
    return &dri2_ctx->base;
 
 cleanup:
+   xv6_mesa_log("egl create_context cleanup");
    mtx_unlock(&dri2_dpy->lock);
    free(dri2_ctx);
    return NULL;
@@ -1397,6 +1416,7 @@ static EGLBoolean
 dri2_make_current(_EGLDisplay *disp, _EGLSurface *dsurf, _EGLSurface *rsurf,
                   _EGLContext *ctx)
 {
+   xv6_mesa_log("egl make_current begin");
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_context *dri2_ctx = dri2_egl_context(ctx);
    _EGLDisplay *old_disp = NULL;
@@ -1412,13 +1432,16 @@ dri2_make_current(_EGLDisplay *disp, _EGLSurface *dsurf, _EGLSurface *rsurf,
       return _eglError(EGL_NOT_INITIALIZED, "eglMakeCurrent");
 
    /* make new bindings, set the EGL error otherwise */
+   xv6_mesa_log("egl make_current bind egl begin");
    if (!_eglBindContext(ctx, dsurf, rsurf, &old_ctx, &old_dsurf, &old_rsurf))
       return EGL_FALSE;
+   xv6_mesa_log("egl make_current bind egl done");
 
    if (old_ctx == ctx && old_dsurf == dsurf && old_rsurf == rsurf) {
       _eglPutSurface(old_dsurf);
       _eglPutSurface(old_rsurf);
       _eglPutContext(old_ctx);
+      xv6_mesa_log("egl make_current unchanged done");
       return EGL_TRUE;
    }
 
@@ -1433,7 +1456,9 @@ dri2_make_current(_EGLDisplay *disp, _EGLSurface *dsurf, _EGLSurface *rsurf,
          old_dri2_dpy->vtbl->set_shared_buffer_mode(old_disp, old_dsurf, false);
       }
 
+      xv6_mesa_log("egl make_current unbind old begin");
       driUnbindContext(old_cctx);
+      xv6_mesa_log("egl make_current unbind old done");
 
       if (old_dsurf)
          dri2_surf_update_fence_fd(old_ctx, old_disp, old_dsurf);
@@ -1444,7 +1469,9 @@ dri2_make_current(_EGLDisplay *disp, _EGLSurface *dsurf, _EGLSurface *rsurf,
    cctx = (dri2_ctx) ? dri2_ctx->dri_context : NULL;
 
    if (cctx) {
+      xv6_mesa_log("egl make_current driBindContext begin");
       if (!driBindContext(cctx, ddraw, rdraw)) {
+         xv6_mesa_log("egl make_current driBindContext failed");
          _EGLContext *tmp_ctx;
 
          /* driBindContext failed. We cannot tell for sure why, but
@@ -1498,6 +1525,7 @@ dri2_make_current(_EGLDisplay *disp, _EGLSurface *dsurf, _EGLSurface *rsurf,
 
          _eglLog(_EGL_WARNING, "DRI2: failed to rebind the previous context");
       } else {
+         xv6_mesa_log("egl make_current driBindContext done");
          /* driBindContext succeeded, so take a reference on the
           * dri2_dpy. This prevents dri2_dpy from being reinitialized when a
           * EGLDisplay is terminated and then initialized again while a
@@ -1530,6 +1558,7 @@ dri2_make_current(_EGLDisplay *disp, _EGLSurface *dsurf, _EGLSurface *rsurf,
       dri2_dpy->vtbl->set_shared_buffer_mode(disp, dsurf, mode);
    }
 
+   xv6_mesa_log("egl make_current done");
    return EGL_TRUE;
 }
 

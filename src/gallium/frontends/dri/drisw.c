@@ -601,6 +601,10 @@ drisw_init_screen(struct dri_screen *screen, bool driver_name_is_inferred)
    struct pipe_screen *pscreen = NULL;
    const struct drisw_loader_funcs *lf = &drisw_lf;
 
+   fprintf(stderr,
+           "xv6-mesa: drisw_init_screen fd=%d loader=%p version=%u inferred=%d\n",
+           screen->fd, (void *)loader, loader ? loader->base.version : 0,
+           driver_name_is_inferred);
    screen->swrast_no_present = debug_get_option_swrast_no_present();
 
    if (loader->base.version >= 4) {
@@ -616,9 +620,12 @@ drisw_init_screen(struct dri_screen *screen, bool driver_name_is_inferred)
    if (!success)
       success = pipe_loader_sw_probe_dri(&screen->dev, lf);
 
+   fprintf(stderr, "xv6-mesa: drisw pipe_loader success=%d dev=%p\n",
+           success, (void *)screen->dev);
    if (success)
       pscreen = pipe_loader_create_screen(screen->dev, driver_name_is_inferred);
 
+   fprintf(stderr, "xv6-mesa: drisw pscreen=%p\n", (void *)pscreen);
    return pscreen;
 }
 

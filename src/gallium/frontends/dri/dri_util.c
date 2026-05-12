@@ -56,6 +56,7 @@
 #include "loader_dri_helper.h"
 #include "pipe-loader/pipe_loader.h"
 #include "pipe/p_screen.h"
+#include <stdio.h>
 
 driOptionDescription __dri2ConfigOptions[] = {
       DRI_CONF_SECTION_DEBUG
@@ -114,9 +115,13 @@ driCreateNewScreen3(int scrn, int fd,
 
     screen->fd = fd;
     screen->myNum = scrn;
-    screen->type = type;
+   screen->type = type;
 
-    /* Option parsing before ->InitScreen(), as some options apply there. */
+   fprintf(stderr,
+           "xv6-mesa: driCreateNewScreen3 fd=%d type=%d inferred=%d multibuf=%d\n",
+           fd, type, driver_name_is_inferred, has_multibuffer);
+
+   /* Option parsing before ->InitScreen(), as some options apply there. */
     driParseOptionInfo(&screen->optionInfo,
                        __dri2ConfigOptions, ARRAY_SIZE(__dri2ConfigOptions));
     driParseConfigFiles(&screen->optionCache, &screen->optionInfo, screen->myNum,
@@ -142,14 +147,17 @@ driCreateNewScreen3(int scrn, int fd,
       UNREACHABLE("unknown dri screen type");
    }
    if (pscreen == NULL) {
+      fprintf(stderr, "xv6-mesa: driCreateNewScreen3 pscreen=NULL\n");
       dri_destroy_screen(screen);
       return NULL;
    }
    *driver_configs = dri_init_screen(screen, pscreen, has_multibuffer);
    if (*driver_configs == NULL) {
+      fprintf(stderr, "xv6-mesa: driCreateNewScreen3 driver_configs=NULL\n");
       dri_destroy_screen(screen);
       return NULL;
    }
+   fprintf(stderr, "xv6-mesa: driCreateNewScreen3 driver_configs ready\n");
 
     struct gl_constants consts = { 0 };
     gl_api api;
