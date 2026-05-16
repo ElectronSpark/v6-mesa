@@ -270,7 +270,7 @@ pipe_virtio_gpu_create_screen(int fd, const struct pipe_screen_config *config)
 #if DETECT_OS_XV6
    fprintf(stderr, "xv6-mesa: virtio_gpu create_screen fd=%d try xv6 winsys\n",
            fd);
-   struct virgl_winsys *vws = virgl_xv6_winsys_create();
+   struct virgl_winsys *vws = virgl_xv6_winsys_create_for_fd(fd);
    if (vws) {
       fprintf(stderr, "xv6-mesa: virtio_gpu xv6 winsys ok\n");
       screen = virgl_create_screen(vws, config);

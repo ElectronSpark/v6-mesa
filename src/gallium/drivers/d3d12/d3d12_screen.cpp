@@ -48,6 +48,8 @@
 #include "util/u_dl.h"
 #include "util/mesa-blake3.h"
 
+#include <stdio.h>
+
 #include "frontend/sw_winsys.h"
 
 #include "git_sha1.h"
@@ -880,9 +882,15 @@ create_device(util_dl_library *d3d12_mod, IUnknown *adapter, ID3D12DeviceFactory
       factory->SetFlags(D3D12_DEVICE_FACTORY_FLAG_ALLOW_RETURNING_EXISTING_DEVICE |
          D3D12_DEVICE_FACTORY_FLAG_ALLOW_RETURNING_INCOMPATIBLE_EXISTING_DEVICE);
       /* Fallback to D3D_FEATURE_LEVEL_11_0 for D3D12 versions without generic support */
-      if (FAILED(factory->CreateDevice(adapter, D3D_FEATURE_LEVEL_1_0_GENERIC, IID_PPV_ARGS(&dev))))
-         if (FAILED(factory->CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dev))))
+      HRESULT hr = factory->CreateDevice(adapter, D3D_FEATURE_LEVEL_1_0_GENERIC, IID_PPV_ARGS(&dev));
+      if (FAILED(hr)) {
+         HRESULT hr11 = factory->CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dev));
+         if (FAILED(hr11)) {
             debug_printf("D3D12: D3D12CreateDevice failed\n");
+            fprintf(stderr, "D3D12: factory CreateDevice failed generic=0x%08x fl11=0x%08x\n",
+                    (unsigned)hr, (unsigned)hr11);
+         }
+      }
    } else {
       typedef HRESULT(WINAPI *PFN_D3D12CREATEDEVICE)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
       PFN_D3D12CREATEDEVICE D3D12CreateDevice = (PFN_D3D12CREATEDEVICE)util_dl_get_proc_address(d3d12_mod, "D3D12CreateDevice");
@@ -891,9 +899,15 @@ create_device(util_dl_library *d3d12_mod, IUnknown *adapter, ID3D12DeviceFactory
          return NULL;
       }
       /* Fallback to D3D_FEATURE_LEVEL_11_0 for D3D12 versions without generic support */
-      if (FAILED(D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_1_0_GENERIC, IID_PPV_ARGS(&dev))))
-         if (FAILED(D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dev))))
+      HRESULT hr = D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_1_0_GENERIC, IID_PPV_ARGS(&dev));
+      if (FAILED(hr)) {
+         HRESULT hr11 = D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dev));
+         if (FAILED(hr11)) {
             debug_printf("D3D12: D3D12CreateDevice failed\n");
+            fprintf(stderr, "D3D12: D3D12CreateDevice failed generic=0x%08x fl11=0x%08x\n",
+                    (unsigned)hr, (unsigned)hr11);
+         }
+      }
    }
 
    return dev;
@@ -1494,8 +1508,10 @@ d3d12_init_screen_command_queue(struct d3d12_screen *screen, D3D12_COMMAND_QUEUE
 #endif
    {
       if (FAILED(screen->dev->CreateCommandQueue(&queue_desc,
-                                                 IID_PPV_ARGS(&screen->cmdqueue))))
+                                                 IID_PPV_ARGS(&screen->cmdqueue)))) {
+         fprintf(stderr, "D3D12: CreateCommandQueue failed\n");
          return false;
+      }
    }
    return true;
 }
@@ -1528,6 +1544,7 @@ d3d12_init_screen(struct d3d12_screen *screen, IUnknown *adapter)
 
       if (!screen->dev) {
          debug_printf("D3D12: failed to create device\n");
+         fprintf(stderr, "D3D12: failed to create device\n");
          return false;
       }
    }

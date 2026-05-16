@@ -8,5 +8,6 @@
 struct virgl_winsys;
 
 struct virgl_winsys *virgl_xv6_winsys_create(void);
+struct virgl_winsys *virgl_xv6_winsys_create_for_fd(int fd);
 
 #endif

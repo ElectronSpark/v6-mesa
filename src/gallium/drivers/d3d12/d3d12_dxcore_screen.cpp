@@ -30,6 +30,29 @@
 
 #include <directx/dxcore.h>
 #include <dxguids/dxguids.h>
+#include <stdio.h>
+
+struct xv6_d3dkmt_handle {
+   uint32_t v;
+};
+
+struct xv6_winluid {
+   uint32_t a;
+   uint32_t b;
+};
+
+struct xv6_d3dkmt_adapterinfo {
+   struct xv6_d3dkmt_handle adapter_handle;
+   struct xv6_winluid adapter_luid;
+   uint32_t num_sources;
+   uint32_t present_move_regions_preferred;
+};
+
+struct xv6_d3dkmt_enumadapters2 {
+   uint32_t num_adapters;
+   uint32_t reserved;
+   uint64_t *adapters;
+};
 
 static IDXCoreAdapterFactory *
 get_dxcore_factory()
@@ -59,10 +82,72 @@ get_dxcore_factory()
    return factory;
 }
 
+static bool
+get_first_d3dkmt_luid(LUID *adapter_luid)
+{
+   typedef int32_t(WINAPI *PFN_D3DKMT_ENUM_ADAPTERS2)(xv6_d3dkmt_enumadapters2 *args);
+
+   util_dl_library *dxcore_mod = util_dl_open(UTIL_DL_PREFIX "dxcore" UTIL_DL_EXT);
+   if (!dxcore_mod)
+      return false;
+
+   PFN_D3DKMT_ENUM_ADAPTERS2 enum_adapters =
+      (PFN_D3DKMT_ENUM_ADAPTERS2)util_dl_get_proc_address(dxcore_mod, "D3DKMTEnumAdapters2");
+   if (!enum_adapters)
+      return false;
+
+   xv6_d3dkmt_enumadapters2 query = {};
+   if (enum_adapters(&query) != 0 || query.num_adapters == 0)
+      return false;
+
+   xv6_d3dkmt_adapterinfo adapters[8] = {};
+   if (query.num_adapters > ARRAY_SIZE(adapters))
+      query.num_adapters = ARRAY_SIZE(adapters);
+   query.adapters = (uint64_t *)adapters;
+   if (enum_adapters(&query) != 0 || query.num_adapters == 0 ||
+       adapters[0].adapter_handle.v == 0)
+      return false;
+
+   adapter_luid->LowPart = adapters[0].adapter_luid.a;
+   adapter_luid->HighPart = (LONG)adapters[0].adapter_luid.b;
+   fprintf(stderr, "D3D12: D3DKMT fallback adapter handle=0x%x luid=%08x:%08x\n",
+           adapters[0].adapter_handle.v, adapters[0].adapter_luid.b,
+           adapters[0].adapter_luid.a);
+   return true;
+}
+
+static void
+log_dxcore_attribute_counts(IDXCoreAdapterFactory *factory)
+{
+   static const struct {
+      const char *name;
+      const GUID *attr;
+   } attrs[] = {
+      { "D3D12_GRAPHICS", &DXCORE_ADAPTER_ATTRIBUTE_D3D12_GRAPHICS },
+      { "D3D12_CORE_COMPUTE", &DXCORE_ADAPTER_ATTRIBUTE_D3D12_CORE_COMPUTE },
+      { "D3D11_GRAPHICS", &DXCORE_ADAPTER_ATTRIBUTE_D3D11_GRAPHICS },
+      { "D3D12_GENERIC_ML", &DXCORE_ADAPTER_ATTRIBUTE_D3D12_GENERIC_ML },
+      { "D3D12_GENERIC_MEDIA", &DXCORE_ADAPTER_ATTRIBUTE_D3D12_GENERIC_MEDIA },
+      { "HARDWARE_GPU", &DXCORE_HARDWARE_TYPE_ATTRIBUTE_GPU },
+   };
+
+   for (unsigned i = 0; i < ARRAY_SIZE(attrs); i++) {
+      IDXCoreAdapterList *list = nullptr;
+      HRESULT hr = factory->CreateAdapterList(1, attrs[i].attr, &list);
+      unsigned count = SUCCEEDED(hr) ? list->GetAdapterCount() : 0;
+
+      fprintf(stderr, "D3D12: DXCore attr %s hr=0x%08x count=%u\n",
+              attrs[i].name, (unsigned)hr, count);
+      if (list)
+         list->Release();
+   }
+}
+
 static IDXCoreAdapter *
 choose_dxcore_adapter(IDXCoreAdapterFactory *factory, LUID *adapter_luid)
 {
    IDXCoreAdapter *adapter = nullptr;
+   log_dxcore_attribute_counts(factory);
    if (adapter_luid) {
       if (SUCCEEDED(factory->GetAdapterByLuid(*adapter_luid, &adapter)))
          return adapter;
@@ -70,7 +155,10 @@ choose_dxcore_adapter(IDXCoreAdapterFactory *factory, LUID *adapter_luid)
    }
 
    IDXCoreAdapterList *list = nullptr;
-   if (SUCCEEDED(factory->CreateAdapterList(1, &DXCORE_ADAPTER_ATTRIBUTE_D3D12_GRAPHICS, &list))) {
+   HRESULT list_hr = factory->CreateAdapterList(1, &DXCORE_ADAPTER_ATTRIBUTE_D3D12_GRAPHICS, &list);
+   if (SUCCEEDED(list_hr)) {
+      unsigned adapter_count = list->GetAdapterCount();
+      fprintf(stderr, "D3D12: DXCore adapter list count=%u\n", adapter_count);
 
 #ifndef _WIN32
       // Pick the user selected adapter if any
@@ -111,18 +199,40 @@ choose_dxcore_adapter(IDXCoreAdapterFactory *factory, LUID *adapter_luid)
 #endif
 
       // Adapter not specified or not found, so pick an integrated adapter if possible
-      for (unsigned i = 0; i < list->GetAdapterCount(); ++i) {
+      for (unsigned i = 0; i < adapter_count; ++i) {
          if (SUCCEEDED(list->GetAdapter(i, &adapter))) {
             bool is_integrated;
-            if (SUCCEEDED(adapter->GetProperty(DXCoreAdapterProperty::IsIntegrated, &is_integrated)) && is_integrated)
+            HRESULT integrated_hr =
+               adapter->GetProperty(DXCoreAdapterProperty::IsIntegrated, &is_integrated);
+            fprintf(stderr, "D3D12: adapter %u IsIntegrated hr=0x%08x value=%u\n",
+                    i, (unsigned)integrated_hr,
+                    SUCCEEDED(integrated_hr) ? (unsigned)is_integrated : 0);
+            if (SUCCEEDED(integrated_hr) && is_integrated)
                return adapter;
             adapter->Release();
+         } else {
+            fprintf(stderr, "D3D12: GetAdapter(%u) failed\n", i);
          }
       }
 
       // No integrated GPUs, so pick the first valid one
-      if (list->GetAdapterCount() > 0 && SUCCEEDED(list->GetAdapter(0, &adapter)))
+      if (adapter_count > 0 && SUCCEEDED(list->GetAdapter(0, &adapter))) {
+         fprintf(stderr, "D3D12: selected DXCore adapter 0 fallback\n");
          return adapter;
+      }
+
+      if (adapter_count == 0) {
+         LUID d3dkmt_luid = {};
+         if (get_first_d3dkmt_luid(&d3dkmt_luid) &&
+             SUCCEEDED(factory->GetAdapterByLuid(d3dkmt_luid, &adapter))) {
+            fprintf(stderr, "D3D12: selected DXCore adapter by D3DKMT LUID fallback\n");
+            return adapter;
+         }
+         fprintf(stderr, "D3D12: D3DKMT LUID fallback failed\n");
+      }
+   } else {
+      fprintf(stderr, "D3D12: CreateAdapterList(D3D12_GRAPHICS) failed hr=0x%08x\n",
+              (unsigned)list_hr);
    }
 
    return NULL;
@@ -144,6 +254,15 @@ static void
 dxcore_get_memory_info(struct d3d12_screen *screen, struct d3d12_memory_info *output)
 {
    struct d3d12_dxcore_screen *dxcore_screen = d3d12_dxcore_screen(screen);
+   if (!dxcore_screen->adapter) {
+      output->budget_local = screen->memory_device_size_megabytes << 20;
+      output->budget_nonlocal = screen->memory_system_size_megabytes << 20;
+      output->budget = output->budget_local + output->budget_nonlocal;
+      output->usage_local = 0;
+      output->usage_nonlocal = 0;
+      output->usage = 0;
+      return;
+   }
    DXCoreAdapterMemoryBudget local_info, nonlocal_info;
    DXCoreAdapterMemoryBudgetNodeSegmentGroup local_node_segment = { 0, DXCoreSegmentGroup::Local };
    DXCoreAdapterMemoryBudgetNodeSegmentGroup nonlocal_node_segment = { 0, DXCoreSegmentGroup::NonLocal };
@@ -187,44 +306,81 @@ d3d12_init_dxcore_screen(struct d3d12_screen *dscreen)
    struct d3d12_dxcore_screen *screen = d3d12_dxcore_screen(dscreen);
 
    screen->factory = get_dxcore_factory();
-   if (!screen->factory)
+   if (!screen->factory) {
+      fprintf(stderr, "D3D12: failed to create DXCore factory\n");
       return false;
+   }
 
    LUID *adapter_luid = &dscreen->adapter_luid;
    if (adapter_luid->HighPart == 0 && adapter_luid->LowPart == 0)
       adapter_luid = nullptr;
 
    screen->adapter = choose_dxcore_adapter(screen->factory, adapter_luid);
+   bool use_d3d12_default_adapter = false;
    if (!screen->adapter) {
-      debug_printf("D3D12: no suitable adapter\n");
-      return false;
+      LUID d3dkmt_luid = {};
+      if (!get_first_d3dkmt_luid(&d3dkmt_luid)) {
+         debug_printf("D3D12: no suitable adapter\n");
+         fprintf(stderr, "D3D12: no suitable DXCore adapter\n");
+         return false;
+      }
+
+      fprintf(stderr, "D3D12: using D3D12 default-adapter fallback for D3DKMT LUID %08x:%08x\n",
+              (unsigned)d3dkmt_luid.HighPart, (unsigned)d3dkmt_luid.LowPart);
+      screen->base.adapter_luid = d3dkmt_luid;
+      screen->base.vendor_id = 0x1414;
+      screen->base.device_id = 0;
+      screen->base.subsys_id = 0;
+      screen->base.revision = 0;
+      screen->base.driver_version = 0;
+      screen->base.memory_device_size_megabytes = 0;
+      screen->base.memory_system_size_megabytes = 3072;
+      snprintf(screen->description, sizeof(screen->description),
+               "Hyper-V GPU-PV D3D12 default adapter");
+      screen->base.base.get_name = dxcore_get_name;
+      screen->base.get_memory_info = dxcore_get_memory_info;
+      use_d3d12_default_adapter = true;
    }
 
    DXCoreHardwareID hardware_ids = {};
    uint64_t dedicated_video_memory, dedicated_system_memory, shared_system_memory;
-   if (FAILED(screen->adapter->GetProperty(DXCoreAdapterProperty::HardwareID, &hardware_ids)) ||
-       FAILED(screen->adapter->GetProperty(DXCoreAdapterProperty::DedicatedAdapterMemory, &dedicated_video_memory)) ||
-       FAILED(screen->adapter->GetProperty(DXCoreAdapterProperty::DedicatedSystemMemory, &dedicated_system_memory)) ||
-       FAILED(screen->adapter->GetProperty(DXCoreAdapterProperty::SharedSystemMemory, &shared_system_memory)) ||
-       FAILED(screen->adapter->GetProperty(DXCoreAdapterProperty::DriverVersion, &screen->base.driver_version)) ||
-       FAILED(screen->adapter->GetProperty(DXCoreAdapterProperty::DriverDescription,
-                                           sizeof(screen->description),
-                                           screen->description))) {
-      debug_printf("D3D12: failed to retrieve adapter description\n");
-      return false;
+   if (!use_d3d12_default_adapter) {
+      if (FAILED(screen->adapter->GetProperty(DXCoreAdapterProperty::HardwareID, &hardware_ids)) ||
+          FAILED(screen->adapter->GetProperty(DXCoreAdapterProperty::DedicatedAdapterMemory, &dedicated_video_memory)) ||
+          FAILED(screen->adapter->GetProperty(DXCoreAdapterProperty::DedicatedSystemMemory, &dedicated_system_memory)) ||
+          FAILED(screen->adapter->GetProperty(DXCoreAdapterProperty::SharedSystemMemory, &shared_system_memory)) ||
+          FAILED(screen->adapter->GetProperty(DXCoreAdapterProperty::DriverVersion, &screen->base.driver_version)) ||
+          FAILED(screen->adapter->GetProperty(DXCoreAdapterProperty::DriverDescription,
+                                              sizeof(screen->description),
+                                              screen->description))) {
+         debug_printf("D3D12: failed to retrieve adapter description\n");
+         fprintf(stderr, "D3D12: failed to retrieve DXCore adapter properties\n");
+         return false;
+      }
+
+      screen->base.vendor_id = hardware_ids.vendorID;
+      screen->base.device_id = hardware_ids.deviceID;
+      screen->base.subsys_id = hardware_ids.subSysID;
+      screen->base.revision = hardware_ids.revision;
+      screen->base.memory_device_size_megabytes = dedicated_video_memory >> 20;
+      screen->base.memory_system_size_megabytes = (dedicated_system_memory + shared_system_memory) >> 20;
+      screen->base.base.get_name = dxcore_get_name;
+      screen->base.get_memory_info = dxcore_get_memory_info;
+      fprintf(stderr,
+              "D3D12: adapter properties vendor=0x%04x device=0x%04x subsys=0x%08x rev=0x%x dedicated=%llu system=%llu shared=%llu driver=0x%llx desc='%s'\n",
+              screen->base.vendor_id, screen->base.device_id,
+              screen->base.subsys_id, screen->base.revision,
+              (unsigned long long)dedicated_video_memory,
+              (unsigned long long)dedicated_system_memory,
+              (unsigned long long)shared_system_memory,
+              (unsigned long long)screen->base.driver_version,
+              screen->description);
    }
 
-   screen->base.vendor_id = hardware_ids.vendorID;
-   screen->base.device_id = hardware_ids.deviceID;
-   screen->base.subsys_id = hardware_ids.subSysID;
-   screen->base.revision = hardware_ids.revision;
-   screen->base.memory_device_size_megabytes = dedicated_video_memory >> 20;
-   screen->base.memory_system_size_megabytes = (dedicated_system_memory + shared_system_memory) >> 20;
-   screen->base.base.get_name = dxcore_get_name;
-   screen->base.get_memory_info = dxcore_get_memory_info;
-
-   if (!d3d12_init_screen(&screen->base, screen->adapter)) {
+   if (!d3d12_init_screen(&screen->base,
+                          use_d3d12_default_adapter ? NULL : screen->adapter)) {
       debug_printf("D3D12: failed to initialize DXCore screen\n");
+      fprintf(stderr, "D3D12: failed to initialize DXCore screen\n");
       return false;
    }
 

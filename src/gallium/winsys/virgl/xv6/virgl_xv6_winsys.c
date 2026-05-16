@@ -35,6 +35,7 @@
 #define FB_GPU_VIRGL_TRANSFER_FROM_HOST 0x4621
 #define FB_GPU_VIRGL_RESOURCE_EXPORT_FD 0x4628
 #define FB_GPU_VIRGL_FENCE_WAIT 0x1
+#define FB_GPU_VIRGL_SUBMIT_ASYNC 0x1
 
 struct fb_gpu_virgl_ctx {
    uint32_t ctx_id;
@@ -466,6 +467,7 @@ virgl_xv6_submit_cmd(struct virgl_winsys *vws, struct virgl_cmd_buf *_cbuf,
 
    memset(&submit, 0, sizeof(submit));
    submit.ctx_id = xws->ctx_id;
+   submit.flags = FB_GPU_VIRGL_SUBMIT_ASYNC;
    submit.cmd = (uint64_t)(uintptr_t)cbuf->base.buf;
    submit.cmd_size = cbuf->base.cdw * sizeof(uint32_t);
 
@@ -656,18 +658,28 @@ virgl_xv6_destroy(struct virgl_winsys *vws)
 }
 
 struct virgl_winsys *
-virgl_xv6_winsys_create(void)
+virgl_xv6_winsys_create_for_fd(int fd)
 {
    struct virgl_xv6_winsys *xws = CALLOC_STRUCT(virgl_xv6_winsys);
    struct fb_gpu_virgl_ctx ctx;
    struct virgl_drm_caps caps;
+   const char *device_path;
 
    if (!xws)
       return NULL;
 
-   xws->fd = open("/dev/gpu0", O_RDWR);
+   xws->fd = -1;
+   if (fd >= 0)
+      xws->fd = dup(fd);
+   device_path = getenv("XV6_VIRGL_DEVICE");
+   if (xws->fd < 0 && device_path && device_path[0])
+      xws->fd = open(device_path, O_RDWR | O_CLOEXEC);
    if (xws->fd < 0)
-      xws->fd = open("/dev/fb0", O_RDWR);
+      xws->fd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
+   if (xws->fd < 0)
+      xws->fd = open("/dev/gpu0", O_RDWR | O_CLOEXEC);
+   if (xws->fd < 0)
+      xws->fd = open("/dev/fb0", O_RDWR | O_CLOEXEC);
    if (xws->fd < 0)
       goto fail;
 
@@ -722,4 +734,10 @@ fail:
       close(xws->fd);
    FREE(xws);
    return NULL;
+}
+
+struct virgl_winsys *
+virgl_xv6_winsys_create(void)
+{
+   return virgl_xv6_winsys_create_for_fd(-1);
 }
