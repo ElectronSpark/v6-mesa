@@ -59,6 +59,7 @@
 #include "util/u_sample_positions.h"
 #include "util/u_dl.h"
 #include <dxguids/dxguids.h>
+#include <stdlib.h>
 #include <string.h>
 #include "d3d12_interop_public.h"
 
@@ -66,6 +67,17 @@
 #include <wrl/client.h>
 using Microsoft::WRL::ComPtr;
 #endif
+
+static bool
+xv6_d3d12_defer_old_batch_waits(void)
+{
+   const char *driver = getenv("GALLIUM_DRIVER");
+   const char *opt = getenv("XV6_D3D12_DEFER_OLD_BATCH_WAITS");
+
+   if (opt)
+      return strcmp(opt, "0") != 0 && strcmp(opt, "false") != 0;
+   return driver && strcmp(driver, "d3d12") == 0;
+}
 
 static void
 d3d12_context_destroy(struct pipe_context *pctx)
@@ -174,11 +186,18 @@ void
 d3d12_flush_cmdlist_and_wait(struct d3d12_context *ctx)
 {
    struct d3d12_batch *batch = d3d12_current_batch(ctx);
+   bool defer_old_waits = xv6_d3d12_defer_old_batch_waits();
 
-   d3d12_foreach_submitted_batch(ctx, old_batch)
-      d3d12_reset_batch(ctx, old_batch, OS_TIMEOUT_INFINITE);
+   if (!defer_old_waits) {
+      d3d12_foreach_submitted_batch(ctx, old_batch)
+         d3d12_reset_batch(ctx, old_batch, OS_TIMEOUT_INFINITE);
+   }
    if (d3d12_flush_cmdlist(ctx))
       d3d12_reset_batch(ctx, batch, OS_TIMEOUT_INFINITE);
+   if (defer_old_waits) {
+      d3d12_foreach_submitted_batch(ctx, old_batch)
+         d3d12_reset_batch(ctx, old_batch, 0);
+   }
 }
 
 static void

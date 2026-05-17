@@ -35,6 +35,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include "util/libdrm.h"
@@ -43,6 +44,9 @@
 #include <sys/mman.h>
 #include <vulkan/vulkan_core.h>
 #include <vulkan/vulkan_wayland.h>
+#if defined(__x86_64__) && defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 
 #include "util/anon_file.h"
 #include "util/perf/cpu_trace.h"
@@ -62,8 +66,121 @@
 static void
 xv6_mesa_log(const char *msg)
 {
+   const char *trace = getenv("XV6_MESA_TRACE_LOG");
+
+   if (!trace || strcmp(trace, "0") == 0 || strcmp(trace, "false") == 0)
+      return;
    fprintf(stderr, "xv6-mesa: %s\n", msg);
    fflush(stderr);
+}
+
+static bool
+xv6_mesa_perf_log_enabled(void)
+{
+   const char *perf = getenv("XV6_MESA_PERF_LOG");
+
+   return perf && perf[0] && strcmp(perf, "0") != 0 &&
+          strcmp(perf, "false") != 0;
+}
+
+static bool
+xv6_mesa_wayland_throttle_disabled(void)
+{
+   const char *xv6_throttle = getenv("XV6_MESA_WAYLAND_THROTTLE");
+   const char *driver = getenv("GALLIUM_DRIVER");
+
+   if (xv6_throttle)
+      return strcmp(xv6_throttle, "0") == 0;
+
+#if DETECT_OS_XV6
+   if (driver && strcmp(driver, "d3d12") == 0)
+      return true;
+#endif
+
+   return false;
+}
+
+static unsigned
+xv6_mesa_wayland_present_interval(void)
+{
+   const char *driver = getenv("GALLIUM_DRIVER");
+   const char *env;
+   char *end = NULL;
+   unsigned long value;
+
+   if (!driver || strcmp(driver, "d3d12") != 0)
+      return 1;
+
+   env = getenv("XV6_D3D12_PRESENT_INTERVAL");
+   if (!env || !env[0])
+      return 1;
+
+   value = strtoul(env, &end, 0);
+   if (end == env || value < 1)
+      return 1;
+   if (value > 240)
+      return 240;
+   return (unsigned)value;
+}
+
+static bool
+xv6_mesa_wayland_inplace_present_enabled(void)
+{
+   const char *driver = getenv("GALLIUM_DRIVER");
+   const char *env = getenv("XV6_MESA_WAYLAND_INPLACE_PRESENT");
+
+   if (env)
+      return strcmp(env, "0") != 0 && strcmp(env, "false") != 0;
+   return driver && strcmp(driver, "d3d12") == 0;
+}
+
+static int64_t
+xv6_mesa_now_us(void)
+{
+   struct timespec ts;
+
+   if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+      return 0;
+   return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
+static void
+xv6_mesa_copy_bytes(void *dst, const void *src, size_t size)
+{
+#if defined(__x86_64__) && defined(__SSE2__)
+   const char *sse_copy = getenv("XV6_MESA_SSE_COPY");
+   uint8_t *d = (uint8_t *)dst;
+   const uint8_t *s = (const uint8_t *)src;
+   size_t i = 0;
+
+   if (sse_copy && sse_copy[0] && strcmp(sse_copy, "0") != 0 &&
+       strcmp(sse_copy, "false") != 0 && size >= 1024) {
+      for (; i + 128 <= size; i += 128) {
+         _mm_prefetch((const char *)(s + i + 512), _MM_HINT_NTA);
+         __m128i v0 = _mm_loadu_si128((const __m128i *)(s + i + 0));
+         __m128i v1 = _mm_loadu_si128((const __m128i *)(s + i + 16));
+         __m128i v2 = _mm_loadu_si128((const __m128i *)(s + i + 32));
+         __m128i v3 = _mm_loadu_si128((const __m128i *)(s + i + 48));
+         __m128i v4 = _mm_loadu_si128((const __m128i *)(s + i + 64));
+         __m128i v5 = _mm_loadu_si128((const __m128i *)(s + i + 80));
+         __m128i v6 = _mm_loadu_si128((const __m128i *)(s + i + 96));
+         __m128i v7 = _mm_loadu_si128((const __m128i *)(s + i + 112));
+
+         _mm_storeu_si128((__m128i *)(d + i + 0), v0);
+         _mm_storeu_si128((__m128i *)(d + i + 16), v1);
+         _mm_storeu_si128((__m128i *)(d + i + 32), v2);
+         _mm_storeu_si128((__m128i *)(d + i + 48), v3);
+         _mm_storeu_si128((__m128i *)(d + i + 64), v4);
+         _mm_storeu_si128((__m128i *)(d + i + 80), v5);
+         _mm_storeu_si128((__m128i *)(d + i + 96), v6);
+         _mm_storeu_si128((__m128i *)(d + i + 112), v7);
+      }
+      if (i != size)
+         memcpy(d + i, s + i, size - i);
+      return;
+   }
+#endif
+   memcpy(dst, src, size);
 }
 
 #include "linux-dmabuf-unstable-v1-client-protocol.h"
@@ -2500,6 +2617,9 @@ dri2_wl_surface_throttle(struct dri2_egl_surface *dri2_surf)
    struct dri2_egl_display *dri2_dpy =
       dri2_egl_display(dri2_surf->base.Resource.Display);
 
+   if (xv6_mesa_wayland_throttle_disabled())
+      return EGL_TRUE;
+
    while (dri2_surf->throttle_callback != NULL) {
       if (throttle_logs++ < 8)
          xv6_mesa_log("wl swrast throttle waiting");
@@ -2522,6 +2642,7 @@ static EGLBoolean
 dri2_wl_kopper_swap_buffers_with_damage(_EGLDisplay *disp, _EGLSurface *draw,
                                         const EGLint *rects, EGLint n_rects)
 {
+   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_surface *dri2_surf = dri2_egl_surface(draw);
 
    if (!dri2_surf->wl_win)
@@ -2800,12 +2921,23 @@ dri2_initialize_wayland_drm(_EGLDisplay *disp)
 
 #if DETECT_OS_XV6
    if (!xv6_wayland_has_virgl_render_node()) {
+      const char *allow_dxg_drm =
+         getenv("XV6_MESA_WAYLAND_DXG_DRM_PROBE");
+      if (allow_dxg_drm &&
+          strcmp(allow_dxg_drm, "0") != 0 &&
+          strcmp(allow_dxg_drm, "false") != 0) {
+         fprintf(stderr,
+                 "xv6-mesa: wayland probing drm path without virgl\n");
+      } else {
       fprintf(stderr, "xv6-mesa: wayland selecting swrast without virgl\n");
       disp->Options.ForceSoftware = EGL_TRUE;
       disp->Options.Zink = EGL_FALSE;
       return dri2_initialize_wayland_swrast(disp);
+      }
    }
-   fprintf(stderr, "xv6-mesa: wayland selecting drm with virgl\n");
+   fprintf(stderr, "xv6-mesa: wayland selecting drm%s\n",
+           xv6_wayland_has_virgl_render_node() ? " with virgl" :
+                                                 " with dxg probe");
 #endif
 
    if (dri2_wl_formats_init(&dri2_dpy->formats) < 0)
@@ -2950,9 +3082,23 @@ dri2_wl_swrast_allocate_xv6_buffer(struct dri2_egl_surface *dri2_surf,
    struct xv6_fb_gpu_bo_create bo;
    struct wl_buffer *buffer;
    int fb_fd;
+   const char *driver = getenv("GALLIUM_DRIVER");
+   const char *use_xv6gpu = getenv("XV6_MESA_WAYLAND_XV6GPU");
 
    if (!dri2_dpy->xv6_gpu_manager)
       return EGL_FALSE;
+   if (driver && strcmp(driver, "d3d12") == 0 &&
+       (!use_xv6gpu || (strcmp(use_xv6gpu, "1") != 0 &&
+                        strcmp(use_xv6gpu, "true") != 0))) {
+      static bool logged;
+      if (!logged) {
+         fprintf(stderr,
+                 "xv6-mesa: d3d12 wayland swap using wl_shm; set XV6_MESA_WAYLAND_XV6GPU=1 to force xv6gpu BOs\n");
+         fflush(stderr);
+         logged = true;
+      }
+      return EGL_FALSE;
+   }
    if (format != WL_SHM_FORMAT_ARGB8888 && format != WL_SHM_FORMAT_XRGB8888)
       return EGL_FALSE;
 
@@ -3102,6 +3248,14 @@ swrast_update_buffers(struct dri2_egl_surface *dri2_surf)
       dri2_surf->current = NULL;
    }
 
+   if (xv6_mesa_wayland_inplace_present_enabled() &&
+       dri2_surf->current && dri2_surf->current->xv6_bo_backed &&
+       !dri2_surf->current->locked) {
+      dri2_surf->back = dri2_surf->current;
+      dri2_surf->back->locked = true;
+      return 0;
+   }
+
    /* find back buffer */
    /* There might be a buffer release already queued that wasn't processed */
    wl_display_dispatch_queue_pending(dri2_dpy->wl_dpy, dri2_surf->wl_queue);
@@ -3174,11 +3328,67 @@ dri2_wl_swrast_get_backbuffer_data(struct dri2_egl_surface *dri2_surf)
    return dri2_surf->back->data;
 }
 
+struct xv6_dri2_wayland_backbuffer_info {
+   void *data;
+   size_t size;
+   int width;
+   int height;
+   int stride;
+   int format;
+   int xv6_bo_backed;
+};
+
+bool
+xv6_dri2_wayland_get_backbuffer_info(void *loader_private,
+                                     struct xv6_dri2_wayland_backbuffer_info *info);
+
+bool
+xv6_dri2_wayland_get_backbuffer_info(void *loader_private,
+                                     struct xv6_dri2_wayland_backbuffer_info *info)
+{
+   struct dri2_egl_surface *dri2_surf = loader_private;
+
+   if (!dri2_surf || !info || !dri2_surf->back ||
+       !dri2_surf->back->data)
+      return false;
+
+   memset(info, 0, sizeof(*info));
+   info->data = dri2_surf->back->data;
+   info->size = (size_t)dri2_surf->back->data_size;
+   info->width = dri2_surf->base.Width;
+   info->height = dri2_surf->base.Height;
+   info->stride = dri2_wl_swrast_get_stride_for_format(dri2_surf->format,
+                                                       dri2_surf->base.Width);
+   info->format = dri2_surf->format;
+   info->xv6_bo_backed = dri2_surf->back->xv6_bo_backed;
+   return true;
+}
+
+static unsigned char
+dri2_wl_swrast_xv6_get_backbuffer_info(struct dri_drawable *drawable,
+                                       void *info,
+                                       void *loaderPrivate)
+{
+   (void)drawable;
+
+   return xv6_dri2_wayland_get_backbuffer_info(loaderPrivate, info) ? 1 : 0;
+}
+
 static void
 dri2_wl_swrast_commit_backbuffer(struct dri2_egl_surface *dri2_surf)
 {
    struct dri2_egl_display *dri2_dpy =
       dri2_egl_display(dri2_surf->base.Resource.Display);
+   static unsigned commit_perf_frames;
+   static int64_t commit_perf_surface_us;
+   static int64_t commit_perf_sync_us;
+   static int64_t commit_perf_flush_us;
+   static int64_t commit_perf_total_us;
+   bool perf = xv6_mesa_perf_log_enabled();
+   int64_t t0 = perf ? xv6_mesa_now_us() : 0;
+   int64_t t_surface = 0;
+   int64_t t_sync = 0;
+   int64_t t_flush = 0;
 
    dri2_surf->wl_win->attached_width = dri2_surf->base.Width;
    dri2_surf->wl_win->attached_height = dri2_surf->base.Height;
@@ -3187,18 +3397,49 @@ dri2_wl_swrast_commit_backbuffer(struct dri2_egl_surface *dri2_surf)
    dri2_surf->dy = 0;
 
    wl_surface_commit(dri2_surf->wayland_surface.wrapper);
+   if (perf)
+      t_surface = xv6_mesa_now_us();
 
    /* If we're not waiting for a frame callback then we'll at least throttle
     * to a sync callback so that we always give a chance for the compositor to
     * handle the commit and send a release event before checking for a free
     * buffer */
-   if (dri2_surf->throttle_callback == NULL) {
+   if (!xv6_mesa_wayland_throttle_disabled() &&
+       dri2_surf->throttle_callback == NULL) {
       dri2_surf->throttle_callback = wl_display_sync(dri2_surf->wl_dpy_wrapper);
       wl_callback_add_listener(dri2_surf->throttle_callback, &throttle_listener,
                                dri2_surf);
    }
+   if (perf)
+      t_sync = xv6_mesa_now_us();
 
    wl_display_flush(dri2_dpy->wl_dpy);
+   if (perf)
+      t_flush = xv6_mesa_now_us();
+
+   if (perf && t0 > 0 && t_surface >= t0 && t_sync >= t_surface &&
+       t_flush >= t_sync) {
+      commit_perf_frames++;
+      commit_perf_surface_us += t_surface - t0;
+      commit_perf_sync_us += t_sync - t_surface;
+      commit_perf_flush_us += t_flush - t_sync;
+      commit_perf_total_us += t_flush - t0;
+      if (commit_perf_frames >= 60 && xv6_mesa_perf_log_enabled()) {
+         fprintf(stderr,
+                 "xv6-mesa: swrast-commit avg_us total=%lld surface=%lld sync=%lld flush=%lld frames=%u\n",
+                 (long long)(commit_perf_total_us / commit_perf_frames),
+                 (long long)(commit_perf_surface_us / commit_perf_frames),
+                 (long long)(commit_perf_sync_us / commit_perf_frames),
+                 (long long)(commit_perf_flush_us / commit_perf_frames),
+                 commit_perf_frames);
+         fflush(stderr);
+         commit_perf_frames = 0;
+         commit_perf_surface_us = 0;
+         commit_perf_sync_us = 0;
+         commit_perf_flush_us = 0;
+         commit_perf_total_us = 0;
+      }
+   }
 }
 
 static void
@@ -3259,6 +3500,10 @@ dri2_wl_swrast_put_image2(struct dri_drawable *draw, int op, int x, int y, int w
                           int h, int stride, char *data, void *loaderPrivate)
 {
    struct dri2_egl_surface *dri2_surf = loaderPrivate;
+   static unsigned put_image_frames;
+   static int64_t put_image_total_us;
+   bool perf = xv6_mesa_perf_log_enabled();
+   int64_t t0 = perf ? xv6_mesa_now_us() : 0;
    /* clamp to surface size */
    w = MIN2(w, dri2_surf->base.Width);
    h = MIN2(h, dri2_surf->base.Height);
@@ -3266,6 +3511,7 @@ dri2_wl_swrast_put_image2(struct dri_drawable *draw, int op, int x, int y, int w
    int dst_stride = dri2_wl_swrast_get_stride_for_format(dri2_surf->format,
                                                          dri2_surf->base.Width);
    int x_offset = dri2_wl_swrast_get_stride_for_format(dri2_surf->format, x);
+   int copy_height;
    char *src, *dst;
 
    assert(copy_width <= stride);
@@ -3282,11 +3528,37 @@ dri2_wl_swrast_put_image2(struct dri_drawable *draw, int op, int x, int y, int w
       copy_width = dst_stride - x_offset;
    if (h > dri2_surf->base.Height - y)
       h = dri2_surf->base.Height - y;
+   copy_height = h;
 
-   for (; h > 0; h--) {
-      memcpy(dst, src, copy_width);
-      src += stride;
-      dst += dst_stride;
+   if (dst == src) {
+      /* D3D12 existing-heap present has already copied into this backbuffer. */
+   } else if (x == 0 && y == 0 && copy_width == stride &&
+       copy_width == dst_stride) {
+      xv6_mesa_copy_bytes(dst, src, copy_width * h);
+   } else {
+      for (; h > 0; h--) {
+         xv6_mesa_copy_bytes(dst, src, copy_width);
+         src += stride;
+         dst += dst_stride;
+      }
+   }
+
+   if (perf && t0 > 0) {
+      int64_t dt = xv6_mesa_now_us() - t0;
+
+      if (dt >= 0) {
+         put_image_frames++;
+         put_image_total_us += dt;
+         if (put_image_frames >= 20) {
+            fprintf(stderr,
+                    "xv6-mesa: swrast-put-image avg_us=%lld frames=%u bytes_per_frame=%d\n",
+                    (long long)(put_image_total_us / put_image_frames),
+                    put_image_frames, copy_width * copy_height);
+            fflush(stderr);
+            put_image_frames = 0;
+            put_image_total_us = 0;
+         }
+      }
    }
 }
 
@@ -3305,51 +3577,232 @@ static EGLBoolean
 dri2_wl_swrast_swap_buffers_with_damage(_EGLDisplay *disp, _EGLSurface *draw,
                                         const EGLint *rects, EGLint n_rects)
 {
+   static uint64_t swrast_swap_seq;
    static unsigned swrast_swap_logs;
+   static unsigned swrast_perf_frames;
+   static int64_t swrast_perf_update_us;
+   static int64_t swrast_perf_attach_us;
+   static int64_t swrast_perf_damage_us;
+   static int64_t swrast_perf_precopy_us;
+   static int64_t swrast_perf_dri_us;
+   static int64_t swrast_perf_rotate_us;
+   static int64_t swrast_perf_commit_us;
+   static int64_t swrast_perf_total_us;
+   static unsigned swrast_perf_inplace_frames;
+   static unsigned swrast_perf_committed_frames;
+   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_surface *dri2_surf = dri2_egl_surface(draw);
+   int64_t t0;
+   int64_t t_update;
+   int64_t t_attach;
+   int64_t t_damage;
+   int64_t t_precopy;
+   int64_t t_dri;
+   int64_t t_rotate;
+   int64_t t_commit;
+   unsigned present_interval;
+   bool present_frame;
+   bool inplace_frame = false;
+   bool perf;
 
    if (!dri2_surf->wl_win)
       return _eglError(EGL_BAD_NATIVE_WINDOW, "dri2_swap_buffers");
 
+   if (xv6_mesa_wayland_inplace_present_enabled() &&
+       dri2_surf->current && dri2_surf->current->xv6_bo_backed &&
+       dri2_surf->current->wayland_buffer.buffer &&
+       dri2_surf->base.Width == dri2_surf->wl_win->width &&
+       dri2_surf->base.Height == dri2_surf->wl_win->height) {
+      static unsigned fast_frames;
+      static int64_t fast_total_us;
+      bool perf = xv6_mesa_perf_log_enabled();
+      int64_t fast_t0 = perf ? xv6_mesa_now_us() : 0;
+      int64_t fast_t1;
+
+      dri2_surf->back = dri2_surf->current;
+      dri2_surf->back->locked = true;
+
+      if (n_rects)
+         driSwapBuffersWithDamage(dri2_surf->dri_drawable, n_rects, rects);
+      else
+         driSwapBuffers(dri2_surf->dri_drawable);
+
+      dri2_surf->current = dri2_surf->back;
+      dri2_surf->back->locked = false;
+      dri2_surf->back = NULL;
+      fast_t1 = perf ? xv6_mesa_now_us() : 0;
+      if (perf && fast_t0 > 0 && fast_t1 >= fast_t0) {
+         fast_frames++;
+         fast_total_us += fast_t1 - fast_t0;
+         if (fast_frames >= 60) {
+            fprintf(stderr,
+                    "xv6-mesa: swrast-fast-inplace avg_us total=%lld frames=%u\n",
+                    (long long)(fast_total_us / fast_frames), fast_frames);
+            fflush(stderr);
+            fast_frames = 0;
+            fast_total_us = 0;
+         }
+      }
+      return EGL_TRUE;
+   }
+
    if (swrast_swap_logs++ < 12)
       xv6_mesa_log("wl swrast swap begin");
 
+   perf = xv6_mesa_perf_log_enabled();
+   t0 = perf ? xv6_mesa_now_us() : 0;
    (void)swrast_update_buffers(dri2_surf);
+   t_update = perf ? xv6_mesa_now_us() : 0;
 
-   if (dri2_wl_surface_throttle(dri2_surf))
+   present_interval = xv6_mesa_wayland_present_interval();
+   swrast_swap_seq++;
+   present_frame = present_interval <= 1 ||
+                   (swrast_swap_seq % present_interval) == 0;
+   inplace_frame =
+      present_frame && xv6_mesa_wayland_inplace_present_enabled() &&
+      dri2_surf->current && dri2_surf->back == dri2_surf->current &&
+      dri2_surf->back && dri2_surf->back->xv6_bo_backed;
+
+   if (inplace_frame) {
+      static unsigned fast_frames;
+      static int64_t fast_total_us;
+      int64_t fast_t0 = perf ? xv6_mesa_now_us() : 0;
+      int64_t fast_t1;
+
+      if (n_rects)
+         driSwapBuffersWithDamage(dri2_surf->dri_drawable, n_rects, rects);
+      else
+         driSwapBuffers(dri2_surf->dri_drawable);
+
+      dri2_surf->back->locked = false;
+      dri2_surf->back = NULL;
+      fast_t1 = perf ? xv6_mesa_now_us() : 0;
+      if (perf && fast_t0 > 0 && fast_t1 >= fast_t0) {
+         fast_frames++;
+         fast_total_us += fast_t1 - fast_t0;
+         if (fast_frames >= 60) {
+            fprintf(stderr,
+                    "xv6-mesa: swrast-fast-inplace avg_us total=%lld frames=%u\n",
+                    (long long)(fast_total_us / fast_frames), fast_frames);
+            fflush(stderr);
+            fast_frames = 0;
+            fast_total_us = 0;
+         }
+      }
+      return EGL_TRUE;
+   }
+
+   if (present_frame && !inplace_frame &&
+       dri2_wl_surface_throttle(dri2_surf))
       wl_surface_attach(dri2_surf->wayland_surface.wrapper,
          /* 'back' here will be promoted to 'current' */
          dri2_surf->back->wayland_buffer.buffer, dri2_surf->dx,
          dri2_surf->dy);
+   t_attach = perf ? xv6_mesa_now_us() : 0;
 
    /* If the compositor doesn't support damage_buffer, we deliberately
     * ignore the damage region and post maximum damage, due to
     * https://bugs.freedesktop.org/78190 */
-   if (!try_damage_buffer(dri2_surf, rects, n_rects))
+   if (present_frame && !inplace_frame &&
+       !try_damage_buffer(dri2_surf, rects, n_rects))
       wl_surface_damage(dri2_surf->wayland_surface.wrapper, 0, 0, INT32_MAX,
                         INT32_MAX);
+   t_damage = perf ? xv6_mesa_now_us() : 0;
 
-   /* guarantee full copy for partial update */
-   int w = n_rects == 1 ? (rects[2] - rects[0]) : 0;
-   int copy_width = dri2_wl_swrast_get_stride_for_format(dri2_surf->format, w);
-   int dst_stride = dri2_wl_swrast_get_stride_for_format(dri2_surf->format,
-                                                         dri2_surf->base.Width);
-   char *dst = dri2_wl_swrast_get_backbuffer_data(dri2_surf);
+   if (n_rects > 0) {
+      int w = n_rects == 1 ? (rects[2] - rects[0]) : 0;
+      int copy_width =
+         dri2_wl_swrast_get_stride_for_format(dri2_surf->format, w);
+      int dst_stride =
+         dri2_wl_swrast_get_stride_for_format(dri2_surf->format,
+                                              dri2_surf->base.Width);
+      char *dst = dri2_wl_swrast_get_backbuffer_data(dri2_surf);
 
-   /* partial copy, copy old content */
-   if (copy_width < dst_stride)
-      dri2_wl_swrast_get_image(NULL, 0, 0, dri2_surf->base.Width,
-                                 dri2_surf->base.Height, dst, dri2_surf);
+      /* Partial updates preserve pixels outside the damaged region.  A
+       * regular eglSwapBuffers() posts a full frame and must not pre-copy the
+       * old frontbuffer into the backbuffer. */
+      if (copy_width < dst_stride)
+         dri2_wl_swrast_get_image(NULL, 0, 0, dri2_surf->base.Width,
+                                  dri2_surf->base.Height, dst, dri2_surf);
+   }
+   t_precopy = perf ? xv6_mesa_now_us() : 0;
 
    if (n_rects)
       driSwapBuffersWithDamage(dri2_surf->dri_drawable, n_rects, rects);
    else
       driSwapBuffers(dri2_surf->dri_drawable);
+   t_dri = perf ? xv6_mesa_now_us() : 0;
 
-   dri2_surf->current = dri2_surf->back;
-   dri2_surf->back = NULL;
+   if (present_frame) {
+      if (inplace_frame) {
+         dri2_surf->back->locked = false;
+         dri2_surf->back = NULL;
+         t_rotate = perf ? xv6_mesa_now_us() : 0;
+      } else {
+         dri2_surf->current = dri2_surf->back;
+         dri2_surf->back = NULL;
+         t_rotate = perf ? xv6_mesa_now_us() : 0;
 
-   dri2_wl_swrast_commit_backbuffer(dri2_surf);
+         dri2_wl_swrast_commit_backbuffer(dri2_surf);
+         if (xv6_mesa_wayland_inplace_present_enabled() &&
+             dri2_surf->current && dri2_surf->current->xv6_bo_backed) {
+            /* xv6 GPU buffers are shared with the compositor. After the
+             * initial attach, subsequent frames can update the same BO and let
+             * the compositor repaint it, avoiding a Wayland commit round trip
+             * per frame. */
+            dri2_surf->current->locked = false;
+         }
+      }
+   } else {
+      dri2_surf->back->locked = false;
+      dri2_surf->back = NULL;
+      t_rotate = perf ? xv6_mesa_now_us() : 0;
+   }
+   t_commit = perf ? xv6_mesa_now_us() : 0;
+   if (perf && t0 > 0 && t_update >= t0 && t_attach >= t_update &&
+       t_damage >= t_attach && t_precopy >= t_damage &&
+       t_dri >= t_precopy && t_rotate >= t_dri &&
+       t_commit >= t_rotate) {
+      swrast_perf_frames++;
+      swrast_perf_update_us += t_update - t0;
+      swrast_perf_attach_us += t_attach - t_update;
+      swrast_perf_damage_us += t_damage - t_attach;
+      swrast_perf_precopy_us += t_precopy - t_damage;
+      swrast_perf_dri_us += t_dri - t_precopy;
+      swrast_perf_rotate_us += t_rotate - t_dri;
+      swrast_perf_commit_us += t_commit - t_rotate;
+      swrast_perf_total_us += t_commit - t0;
+      if (inplace_frame)
+         swrast_perf_inplace_frames++;
+      else if (present_frame)
+         swrast_perf_committed_frames++;
+      if (swrast_perf_frames >= 60 && xv6_mesa_perf_log_enabled()) {
+         fprintf(stderr,
+                 "xv6-mesa: swrast-swap avg_us total=%lld update=%lld attach=%lld damage=%lld precopy=%lld dri=%lld rotate=%lld commit=%lld frames=%u inplace=%u committed=%u\n",
+                 (long long)(swrast_perf_total_us / swrast_perf_frames),
+                 (long long)(swrast_perf_update_us / swrast_perf_frames),
+                 (long long)(swrast_perf_attach_us / swrast_perf_frames),
+                 (long long)(swrast_perf_damage_us / swrast_perf_frames),
+                 (long long)(swrast_perf_precopy_us / swrast_perf_frames),
+                 (long long)(swrast_perf_dri_us / swrast_perf_frames),
+                 (long long)(swrast_perf_rotate_us / swrast_perf_frames),
+                 (long long)(swrast_perf_commit_us / swrast_perf_frames),
+                 swrast_perf_frames, swrast_perf_inplace_frames,
+                 swrast_perf_committed_frames);
+         fflush(stderr);
+         swrast_perf_frames = 0;
+         swrast_perf_update_us = 0;
+         swrast_perf_attach_us = 0;
+         swrast_perf_damage_us = 0;
+         swrast_perf_precopy_us = 0;
+         swrast_perf_dri_us = 0;
+         swrast_perf_rotate_us = 0;
+         swrast_perf_commit_us = 0;
+         swrast_perf_total_us = 0;
+         swrast_perf_inplace_frames = 0;
+         swrast_perf_committed_frames = 0;
+      }
+   }
    if (swrast_swap_logs <= 12)
       xv6_mesa_log("wl swrast swap done");
    return EGL_TRUE;
@@ -3436,12 +3889,13 @@ static const struct dri2_egl_display_vtbl dri2_wl_swrast_display_vtbl = {
 };
 
 static const __DRIswrastLoaderExtension swrast_loader_extension = {
-   .base = {__DRI_SWRAST_LOADER, 2},
+   .base = {__DRI_SWRAST_LOADER, 7},
 
    .getDrawableInfo = dri2_wl_swrast_get_drawable_info,
    .putImage = dri2_wl_swrast_put_image,
    .getImage = dri2_wl_swrast_get_image,
    .putImage2 = dri2_wl_swrast_put_image2,
+   .xv6GetBackbufferInfo = dri2_wl_swrast_xv6_get_backbuffer_info,
 };
 
 static const __DRIextension *swrast_loader_extensions[] = {

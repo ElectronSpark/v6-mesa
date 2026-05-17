@@ -221,6 +221,15 @@ typedef struct {
     unsigned char (*getImageShm2)(struct dri_drawable *readable,
                                   int x, int y, int width, int height,
                                   int shmid, void *loaderPrivate);
+
+    /**
+     * Optional xv6 Wayland backbuffer query for GPU direct-present paths.
+     *
+     * \since 7
+     */
+    unsigned char (*xv6GetBackbufferInfo)(struct dri_drawable *drawable,
+                                          void *info,
+                                          void *loaderPrivate);
 } __DRIswrastLoaderExtension;
 
 /**

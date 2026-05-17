@@ -74,18 +74,12 @@ d3d12_create_fence_raw(ID3D12Fence *fence, uint64_t value)
    ret->type = PIPE_FD_TYPE_NATIVE_SYNC;
    ret->cmdqueue_fence = fence;
    ret->value = value;
-   ret->event = d3d12_fence_create_event(&ret->event_fd);
+   ret->event = 0;
+   ret->event_fd = -1;
    ret->signaled = false;
-
-   if (FAILED(fence->SetEventOnCompletion(value, ret->event)))
-      goto fail;
 
    pipe_reference_init(&ret->reference, 1);
    return ret;
-
-fail:
-   destroy_fence(ret);
-   return NULL;
 }
 
 struct d3d12_fence *
@@ -146,8 +140,17 @@ d3d12_fence_finish(struct d3d12_fence *fence, uint64_t timeout_ns)
       return true;
 
    bool complete = fence->cmdqueue_fence->GetCompletedValue() >= fence->value;
-   if (!complete && timeout_ns)
+   if (!complete && timeout_ns) {
+      if (!fence->event) {
+         fence->event = d3d12_fence_create_event(&fence->event_fd);
+         if (!fence->event)
+            return false;
+      }
+      if (FAILED(fence->cmdqueue_fence->SetEventOnCompletion(fence->value,
+                                                              fence->event)))
+         return false;
       complete = d3d12_fence_wait_event(fence->event, fence->event_fd, timeout_ns);
+   }
 
    fence->signaled = complete;
    return complete;

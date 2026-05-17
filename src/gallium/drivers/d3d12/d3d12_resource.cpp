@@ -88,6 +88,8 @@ d3d12_resource_destroy(struct pipe_screen *pscreen,
 
    if (resource->dt_proxy)
       pipe_resource_reference(&resource->dt_proxy, NULL);
+   if (resource->async_frontbuffer)
+      d3d12_async_frontbuffer_destroy(pscreen, resource->async_frontbuffer);
    threaded_resource_deinit(presource);
    if (can_map_directly(presource))
       util_range_destroy(&resource->valid_buffer_range);
@@ -412,7 +414,8 @@ init_texture(struct d3d12_screen *screen,
                                                 res->base.b.format,
                                                 templ->width0,
                                                 templ->height0,
-                                                64, NULL,
+                                                util_format_get_blocksize(res->base.b.format),
+                                                NULL,
                                                 &res->dt_stride);
          res->dt_refcount = 1;
       } else {
@@ -1359,8 +1362,8 @@ transfer_image_part_to_buf(struct d3d12_context *ctx,
    copy_texture_region(ctx, copy_info);
 }
 
-static bool
-transfer_image_to_buf(struct d3d12_context *ctx,
+bool
+d3d12_transfer_image_to_buf(struct d3d12_context *ctx,
                             struct d3d12_resource *res,
                             struct d3d12_resource *staging_res,
                             struct d3d12_transfer *trans,
@@ -1613,7 +1616,7 @@ read_zs_surface(struct d3d12_context *ctx, struct d3d12_resource *res,
       return NULL;
    }
 
-   if (!transfer_image_to_buf(ctx, res, depth_buffer, trans, 0))
+   if (!d3d12_transfer_image_to_buf(ctx, res, depth_buffer, trans, 0))
       return NULL;
 
    tmpl.format = PIPE_FORMAT_R8_UINT;
@@ -1624,7 +1627,7 @@ read_zs_surface(struct d3d12_context *ctx, struct d3d12_resource *res,
       return NULL;
    }
 
-   if (!transfer_image_to_buf(ctx, res, stencil_buffer, trans, 1))
+   if (!d3d12_transfer_image_to_buf(ctx, res, stencil_buffer, trans, 1))
       return NULL;
 
    d3d12_flush_cmdlist_and_wait(ctx);
@@ -1884,7 +1887,7 @@ d3d12_transfer_map(struct pipe_context *pctx,
                                                        &original_box,
                                                        ptrans/*inout*/);
             /* Perform the readback*/
-            if(!transfer_image_to_buf(ctx, d3d12_resource(planes[plane_slice]), staging_res, trans, 0)){
+            if(!d3d12_transfer_image_to_buf(ctx, d3d12_resource(planes[plane_slice]), staging_res, trans, 0)){
                return NULL;
             }
          }
@@ -1963,7 +1966,7 @@ d3d12_transfer_map(struct pipe_context *pctx,
             uint64_t dst_offset = src_offset % BUFFER_MAP_ALIGNMENT;
             transfer_buf_to_buf(ctx, res, staging_res, src_offset, dst_offset, box->width);
          } else
-            ret = transfer_image_to_buf(ctx, res, staging_res, trans, 0);
+            ret = d3d12_transfer_image_to_buf(ctx, res, staging_res, trans, 0);
          if (!ret)
             return NULL;
          d3d12_flush_cmdlist_and_wait(ctx);

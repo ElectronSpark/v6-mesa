@@ -44,11 +44,15 @@
 #include "util/u_debug.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
+#include "util/u_inlines.h"
 #include "util/u_screen.h"
 #include "util/u_dl.h"
 #include "util/mesa-blake3.h"
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
 #include "frontend/sw_winsys.h"
 
@@ -65,6 +69,206 @@
 
 #include <dxguids/dxguids.h>
 static GUID OpenGLOn12CreatorID = { 0x6bb3cd34, 0x0d19, 0x45ab, { 0x97, 0xed, 0xd7, 0x20, 0xba, 0x3d, 0xfc, 0x80 } };
+
+#define XV6_D3D12_ASYNC_FRONTBUFFER_SLOTS 4
+
+struct d3d12_async_frontbuffer_slot {
+   struct pipe_resource *staging;
+   struct pipe_fence_handle *fence;
+   uint64_t seq;
+   struct pipe_transfer *transfer;
+   unsigned width;
+   unsigned height;
+   unsigned stride;
+   unsigned size;
+   bool pending;
+};
+
+struct d3d12_async_frontbuffer {
+   struct d3d12_async_frontbuffer_slot slots[XV6_D3D12_ASYNC_FRONTBUFFER_SLOTS];
+   unsigned next_slot;
+   unsigned queued;
+   unsigned presented;
+   unsigned warmup_attempts;
+};
+
+struct xv6_dri2_wayland_backbuffer_info {
+   void *data;
+   size_t size;
+   int width;
+   int height;
+   int stride;
+   int format;
+   int xv6_bo_backed;
+};
+
+extern "C" bool
+xv6_drisw_drawable_backbuffer_info(void *drawable_private, void *info);
+
+void
+d3d12_async_frontbuffer_destroy(struct pipe_screen *pscreen,
+                                struct d3d12_async_frontbuffer *async)
+{
+   if (!async)
+      return;
+
+   for (unsigned i = 0; i < ARRAY_SIZE(async->slots); i++) {
+      if (async->slots[i].fence)
+         pscreen->fence_reference(pscreen, &async->slots[i].fence, NULL);
+      pipe_resource_reference(&async->slots[i].staging, NULL);
+   }
+   FREE(async);
+}
+
+static bool
+xv6_d3d12_async_frontbuffer_enabled(void)
+{
+   const char *driver = getenv("GALLIUM_DRIVER");
+   const char *opt = getenv("XV6_D3D12_ASYNC_FRONTBUFFER");
+
+   if (opt)
+      return strcmp(opt, "0") != 0 && strcmp(opt, "false") != 0;
+   return driver && strcmp(driver, "d3d12") == 0;
+}
+
+static unsigned
+xv6_d3d12_present_interval(void)
+{
+   static bool initialized;
+   static unsigned interval = 1;
+   const char *env;
+   char *end = NULL;
+   long parsed;
+
+   if (initialized)
+      return interval;
+   initialized = true;
+   env = getenv("XV6_D3D12_PRESENT_INTERVAL");
+   if (!env || !*env)
+      return interval;
+   parsed = strtol(env, &end, 10);
+   if (end != env && parsed > 0 && parsed <= 120)
+      interval = (unsigned)parsed;
+   return interval;
+}
+
+static unsigned
+xv6_d3d12_async_warmup_frames(void)
+{
+   static bool initialized;
+   static unsigned frames = 0;
+   const char *env;
+   char *end = NULL;
+   long parsed;
+
+   if (initialized)
+      return frames;
+   initialized = true;
+   env = getenv("XV6_D3D12_ASYNC_WARMUP_FRAMES");
+   if (!env || !*env)
+      return frames;
+   parsed = strtol(env, &end, 10);
+   if (end != env && parsed >= 0 && parsed <= 30)
+      frames = (unsigned)parsed;
+   return frames;
+}
+
+static unsigned
+xv6_d3d12_async_warmup_attempts(void)
+{
+   static bool initialized;
+   static unsigned attempts = 30;
+   const char *env;
+   char *end = NULL;
+   long parsed;
+
+   if (initialized)
+      return attempts;
+   initialized = true;
+   env = getenv("XV6_D3D12_ASYNC_WARMUP_ATTEMPTS");
+   if (!env || !*env)
+      return attempts;
+   parsed = strtol(env, &end, 10);
+   if (end != env && parsed >= 0 && parsed <= 300)
+      attempts = (unsigned)parsed;
+   return attempts;
+}
+
+static uint64_t
+xv6_d3d12_async_ready_wait_ns(void)
+{
+   static bool initialized;
+   static uint64_t wait_ns = 0;
+   const char *env;
+   char *end = NULL;
+   unsigned long long parsed;
+
+   if (initialized)
+      return wait_ns;
+   initialized = true;
+   env = getenv("XV6_D3D12_ASYNC_READY_WAIT_NS");
+   if (!env || !*env)
+      return wait_ns;
+   parsed = strtoull(env, &end, 10);
+   if (end != env && parsed <= 100000000ULL)
+      wait_ns = parsed;
+   return wait_ns;
+}
+
+static unsigned
+xv6_d3d12_async_max_pending(void)
+{
+   static bool initialized;
+   static unsigned max_pending = XV6_D3D12_ASYNC_FRONTBUFFER_SLOTS;
+   const char *env;
+   char *end = NULL;
+   long parsed;
+
+   if (initialized)
+      return max_pending;
+   initialized = true;
+   env = getenv("XV6_D3D12_ASYNC_MAX_PENDING");
+   if (!env || !*env)
+      return max_pending;
+   parsed = strtol(env, &end, 10);
+   if (end != env && parsed >= 1 &&
+       parsed <= XV6_D3D12_ASYNC_FRONTBUFFER_SLOTS)
+      max_pending = (unsigned)parsed;
+   return max_pending;
+}
+
+static unsigned
+d3d12_async_frontbuffer_pending_count(const struct d3d12_async_frontbuffer *async)
+{
+   unsigned count = 0;
+
+   if (!async)
+      return 0;
+   for (unsigned i = 0; i < ARRAY_SIZE(async->slots); i++) {
+      if (async->slots[i].pending)
+         count++;
+   }
+   return count;
+}
+
+static int64_t
+xv6_d3d12_now_us(void)
+{
+   struct timespec ts;
+
+   if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+      return 0;
+   return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
+static bool
+xv6_d3d12_perf_log_enabled(void)
+{
+   const char *perf = getenv("XV6_MESA_PERF_LOG");
+
+   return perf && perf[0] && strcmp(perf, "0") != 0 &&
+          strcmp(perf, "false") != 0;
+}
 
 static const struct debug_named_value
 d3d12_debug_options[] = {
@@ -653,6 +857,10 @@ d3d12_deinit_screen(struct d3d12_screen *screen)
       screen->dev10->Release();
       screen->dev10 = nullptr;
    }
+   if (screen->dev13) {
+      screen->dev13->Release();
+      screen->dev13 = nullptr;
+   }
    if (screen->dev15) {
       screen->dev15->Release();
       screen->dev15 = nullptr;
@@ -683,6 +891,706 @@ d3d12_destroy_screen(struct d3d12_screen *screen)
    FREE(screen);
 }
 
+static bool
+xv6_d3d12_direct_backbuffer_enabled(void)
+{
+   const char *opt = getenv("XV6_D3D12_DIRECT_BACKBUFFER");
+
+   if (!opt)
+      return false;
+   return strcmp(opt, "0") != 0 && strcmp(opt, "false") != 0;
+}
+
+static bool
+d3d12_xv6_direct_backbuffer_copy(struct d3d12_screen *screen,
+                                 struct pipe_context *pctx,
+                                 struct d3d12_resource *res,
+                                 unsigned level,
+                                 void *winsys_drawable_handle,
+                                 unsigned nboxes,
+                                 struct pipe_box *sub_box)
+{
+   static unsigned perf_frames;
+   static int64_t perf_open_us;
+   static int64_t perf_copy_us;
+   static int64_t perf_wait_us;
+   static int64_t perf_display_us;
+   static int64_t perf_total_us;
+   static unsigned fail_logs;
+   static unsigned ok_logs;
+   static bool open_heap_unsupported;
+   struct xv6_dri2_wayland_backbuffer_info info = {};
+   struct winsys_handle whandle = {};
+   struct pipe_resource templ = {};
+   struct pipe_resource *dst = NULL;
+   struct pipe_fence_handle *fence = NULL;
+   struct d3d12_transfer trans = {};
+   struct sw_displaytarget *dt;
+   ID3D12Heap *heap = NULL;
+   HRESULT heap_hr;
+   unsigned width;
+   unsigned height;
+   unsigned stride;
+   unsigned size;
+   int64_t t0;
+   int64_t t_open;
+   int64_t t_copy;
+   int64_t t_wait;
+   int64_t t_display;
+   bool ok = false;
+
+   if (open_heap_unsupported ||
+       !xv6_d3d12_direct_backbuffer_enabled() || !screen->dev13 ||
+       !screen->winsys || !winsys_drawable_handle)
+      return false;
+
+   width = u_minify(res->base.b.width0, level);
+   height = u_minify(res->base.b.height0, level);
+   if (!xv6_drisw_drawable_backbuffer_info(winsys_drawable_handle, &info) ||
+       !info.xv6_bo_backed || !info.data || info.width != (int)width ||
+       info.height != (int)height || info.stride <= 0) {
+      return false;
+   }
+
+   stride = (unsigned)info.stride;
+   size = stride * height;
+   if (info.size < size)
+      return false;
+
+   t0 = xv6_d3d12_now_us();
+   heap_hr = screen->dev13->OpenExistingHeapFromAddress1(info.data, info.size,
+                                                         IID_PPV_ARGS(&heap));
+   if (FAILED(heap_hr))
+      heap_hr = screen->dev13->OpenExistingHeapFromAddress(info.data,
+                                                           IID_PPV_ARGS(&heap));
+   if (FAILED(heap_hr)) {
+      if (heap_hr == E_NOTIMPL)
+         open_heap_unsupported = true;
+      if (fail_logs++ < 8) {
+         fprintf(stderr,
+                 "xv6-mesa: d3d12-direct-backbuffer open-existing-heap failed hr=0x%08x data=%p size=%zu\n",
+                 (unsigned)heap_hr, info.data, info.size);
+         fflush(stderr);
+      }
+      return false;
+   }
+   t_open = xv6_d3d12_now_us();
+
+   templ.target = PIPE_BUFFER;
+   templ.format = PIPE_FORMAT_R8_UNORM;
+   templ.width0 = size;
+   templ.height0 = 1;
+   templ.depth0 = 1;
+   templ.array_size = 1;
+   templ.usage = PIPE_USAGE_STAGING;
+   templ.bind = PIPE_BIND_LINEAR;
+
+   whandle.type = WINSYS_HANDLE_TYPE_D3D12_RES;
+   whandle.com_obj = heap;
+   whandle.offset = 0;
+   whandle.format = templ.format;
+   whandle.size = info.size;
+   dst = screen->base.resource_from_handle(&screen->base, &templ, &whandle,
+                                           PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE);
+   if (!dst)
+      goto out;
+
+   trans.base.b.level = level;
+   u_box_3d(0, 0, 0, width, height, 1, &trans.base.b.box);
+   trans.base.b.stride = stride;
+   trans.base.b.layer_stride = size;
+   trans.base.b.offset = 0;
+   if (!d3d12_transfer_image_to_buf(d3d12_context(pctx), res,
+                                    d3d12_resource(dst), &trans, 0))
+      goto out;
+   pctx->flush(pctx, &fence, 0);
+   t_copy = xv6_d3d12_now_us();
+   if (!fence ||
+       !screen->base.fence_finish(&screen->base, NULL, fence,
+                                  OS_TIMEOUT_INFINITE))
+      goto out;
+   t_wait = xv6_d3d12_now_us();
+
+   dt = screen->winsys->displaytarget_create_mapped(screen->winsys,
+                                                    res->base.b.bind,
+                                                    res->base.b.format,
+                                                    width, height, stride,
+                                                    info.data, NULL);
+   if (!dt)
+      goto out;
+   screen->winsys->displaytarget_display(screen->winsys, dt,
+                                         winsys_drawable_handle,
+                                         nboxes, sub_box);
+   t_display = xv6_d3d12_now_us();
+   screen->winsys->displaytarget_destroy(screen->winsys, dt);
+   ok = true;
+
+   if (ok_logs++ < 8) {
+      fprintf(stderr,
+              "xv6-mesa: d3d12-direct-backbuffer copied %ux%u stride=%u bytes=%u\n",
+              width, height, stride, size);
+      fflush(stderr);
+   }
+
+   if (t0 > 0 && t_open >= t0 && t_copy >= t_open &&
+       t_wait >= t_copy && t_display >= t_wait) {
+      perf_frames++;
+      perf_open_us += t_open - t0;
+      perf_copy_us += t_copy - t_open;
+      perf_wait_us += t_wait - t_copy;
+      perf_display_us += t_display - t_wait;
+      perf_total_us += t_display - t0;
+      if (perf_frames >= 20 && xv6_d3d12_perf_log_enabled()) {
+         fprintf(stderr,
+                 "xv6-mesa: d3d12-direct-backbuffer avg_us total=%lld open=%lld copy=%lld wait=%lld display=%lld frames=%u\n",
+                 (long long)(perf_total_us / perf_frames),
+                 (long long)(perf_open_us / perf_frames),
+                 (long long)(perf_copy_us / perf_frames),
+                 (long long)(perf_wait_us / perf_frames),
+                 (long long)(perf_display_us / perf_frames),
+                 perf_frames);
+         fflush(stderr);
+         perf_frames = 0;
+         perf_open_us = 0;
+         perf_copy_us = 0;
+         perf_wait_us = 0;
+         perf_display_us = 0;
+         perf_total_us = 0;
+      }
+   }
+
+out:
+   if (!ok && fail_logs++ < 8) {
+      fprintf(stderr,
+              "xv6-mesa: d3d12-direct-backbuffer unavailable after open data=%p size=%zu\n",
+              info.data, info.size);
+      fflush(stderr);
+   }
+   if (fence)
+      screen->base.fence_reference(&screen->base, &fence, NULL);
+   pipe_resource_reference(&dst, NULL);
+   if (heap)
+      heap->Release();
+   return ok;
+}
+
+static bool
+d3d12_xv6_copy_mapped_to_wayland_backbuffer(void *winsys_drawable_handle,
+                                            const void *src,
+                                            unsigned width,
+                                            unsigned height,
+                                            unsigned src_stride)
+{
+   struct xv6_dri2_wayland_backbuffer_info info = {};
+   static unsigned probe_logs;
+   unsigned dst_stride;
+   unsigned row_bytes;
+   const uint8_t *s = (const uint8_t *)src;
+   uint8_t *d;
+
+   if (!src || !winsys_drawable_handle ||
+       !xv6_drisw_drawable_backbuffer_info(winsys_drawable_handle, &info) ||
+       !info.data || info.width < (int)width || info.height < (int)height ||
+       info.stride <= 0)
+      return false;
+
+   dst_stride = (unsigned)info.stride;
+   row_bytes = width * 4;
+   if (src_stride < row_bytes || dst_stride < row_bytes ||
+       info.size < (size_t)dst_stride * height)
+      return false;
+
+   d = (uint8_t *)info.data;
+   if (xv6_d3d12_perf_log_enabled() && probe_logs < 16) {
+      uint32_t samples[5] = { 0, 0, 0, 0, 0 };
+      unsigned nonblack = 0;
+      unsigned points[5][2] = {
+         { width / 2, height / 2 },
+         { width / 4, height / 4 },
+         { (width * 3) / 4, height / 4 },
+         { width / 4, (height * 3) / 4 },
+         { (width * 3) / 4, (height * 3) / 4 },
+      };
+
+      for (unsigned i = 0; i < ARRAY_SIZE(samples); i++) {
+         unsigned x = points[i][0] >= width ? width - 1 : points[i][0];
+         unsigned y = points[i][1] >= height ? height - 1 : points[i][1];
+         uint32_t p = 0;
+
+         memcpy(&p, s + (size_t)y * src_stride + x * 4, sizeof(p));
+         samples[i] = p;
+         if ((p & 0x00ffffffu) != 0)
+            nonblack++;
+      }
+      fprintf(stderr,
+              "xv6-mesa: d3d12-present-source probe=%u size=%ux%u stride=%u nonblack=%u samples=%08x,%08x,%08x,%08x,%08x\n",
+              probe_logs, width, height, src_stride, nonblack,
+              samples[0], samples[1], samples[2], samples[3], samples[4]);
+      fflush(stderr);
+      probe_logs++;
+   }
+   if (src_stride == row_bytes && dst_stride == row_bytes) {
+      memcpy(d, s, (size_t)row_bytes * height);
+      return true;
+   }
+
+   for (unsigned row = 0; row < height; row++)
+      memcpy(d + (size_t)row * dst_stride,
+             s + (size_t)row * src_stride,
+             row_bytes);
+   return true;
+}
+
+static bool
+d3d12_async_frontbuffer_present_ready_display(struct d3d12_screen *screen,
+                                              struct pipe_context *pctx,
+                                              struct d3d12_resource *res,
+                                              void *winsys_drawable_handle,
+                                              unsigned nboxes,
+   struct pipe_box *sub_box)
+{
+   struct sw_winsys *winsys = screen->winsys;
+   struct d3d12_async_frontbuffer_slot *latest = NULL;
+   struct d3d12_async_frontbuffer_slot *oldest = NULL;
+   bool displayed = false;
+   bool mapped = false;
+   static unsigned map_fail_logs;
+   static unsigned perf_frames;
+   static int64_t perf_scan_us;
+   static int64_t perf_drop_us;
+   static int64_t perf_map_us;
+   static int64_t perf_display_us;
+   static int64_t perf_unmap_us;
+   static int64_t perf_total_us;
+   static uint64_t perf_bytes;
+   static uint64_t perf_boxes;
+   bool perf = xv6_d3d12_perf_log_enabled();
+   int64_t t0 = perf ? xv6_d3d12_now_us() : 0;
+   int64_t t_scan = 0;
+   int64_t t_drop = 0;
+   int64_t t_map = 0;
+   int64_t t_display = 0;
+   int64_t t_unmap = 0;
+
+   if (!res->async_frontbuffer || !winsys)
+      return false;
+
+   for (unsigned i = 0; i < ARRAY_SIZE(res->async_frontbuffer->slots); i++) {
+      struct d3d12_async_frontbuffer_slot *slot =
+         &res->async_frontbuffer->slots[i];
+
+      if (!slot->pending || !slot->fence)
+         continue;
+      if (!oldest || slot->seq < oldest->seq)
+         oldest = slot;
+      if (!screen->base.fence_finish(&screen->base, NULL, slot->fence, 0))
+         continue;
+      latest = slot;
+   }
+   if (!latest && oldest) {
+      uint64_t wait_ns = xv6_d3d12_async_ready_wait_ns();
+
+      if (wait_ns > 0 &&
+          screen->base.fence_finish(&screen->base, NULL, oldest->fence,
+                                    wait_ns))
+         latest = oldest;
+   }
+   if (perf)
+      t_scan = xv6_d3d12_now_us();
+
+   if (!latest)
+      return false;
+
+   for (unsigned i = 0; i < ARRAY_SIZE(res->async_frontbuffer->slots); i++) {
+      struct d3d12_async_frontbuffer_slot *slot =
+         &res->async_frontbuffer->slots[i];
+
+      if (slot != latest && slot->pending && slot->fence &&
+          screen->base.fence_finish(&screen->base, NULL, slot->fence, 0)) {
+         screen->base.fence_reference(&screen->base, &slot->fence, NULL);
+         slot->pending = false;
+      }
+   }
+   if (perf)
+      t_drop = xv6_d3d12_now_us();
+
+   {
+      struct pipe_box box;
+      struct sw_displaytarget *dt;
+      void *src;
+
+      u_box_1d(0, latest->size, &box);
+      src = pctx->buffer_map(pctx, latest->staging, 0,
+                             PIPE_MAP_READ,
+                             &box, &latest->transfer);
+      if (perf)
+         t_map = xv6_d3d12_now_us();
+      if (src) {
+         mapped = true;
+         displayed = d3d12_xv6_copy_mapped_to_wayland_backbuffer(
+            winsys_drawable_handle, src, latest->width, latest->height,
+            latest->stride);
+         if (!displayed) {
+            dt = winsys->displaytarget_create_mapped(winsys, res->base.b.bind,
+                                                     res->base.b.format,
+                                                     latest->width,
+                                                     latest->height,
+                                                     latest->stride, src, NULL);
+            if (dt) {
+               winsys->displaytarget_display(winsys, dt, winsys_drawable_handle,
+                                             nboxes, sub_box);
+               winsys->displaytarget_destroy(winsys, dt);
+               displayed = true;
+            }
+         }
+         if (perf)
+            t_display = xv6_d3d12_now_us();
+         pctx->buffer_unmap(pctx, latest->transfer);
+         latest->transfer = NULL;
+      } else {
+         if (map_fail_logs < 8) {
+            fprintf(stderr,
+                    "xv6-mesa: d3d12-present-map-failed size=%u stride=%u\n",
+                    latest->size, latest->stride);
+            fflush(stderr);
+            map_fail_logs++;
+         }
+         if (perf)
+            t_display = xv6_d3d12_now_us();
+      }
+      if (perf)
+         t_unmap = xv6_d3d12_now_us();
+      screen->base.fence_reference(&screen->base, &latest->fence, NULL);
+      latest->pending = false;
+   }
+
+   if (!mapped || !displayed)
+      return false;
+
+   res->async_frontbuffer->presented++;
+   if (perf && t0 > 0 && t_scan >= t0 && t_drop >= t_scan &&
+       t_map >= t_drop && t_display >= t_map && t_unmap >= t_display) {
+      perf_frames++;
+      perf_scan_us += t_scan - t0;
+      perf_drop_us += t_drop - t_scan;
+      perf_map_us += t_map - t_drop;
+      perf_display_us += t_display - t_map;
+      perf_unmap_us += t_unmap - t_display;
+      perf_total_us += t_unmap - t0;
+      perf_bytes += latest->size;
+      perf_boxes += nboxes;
+      if (perf_frames >= 20 && xv6_d3d12_perf_log_enabled()) {
+         fprintf(stderr,
+                 "xv6-mesa: d3d12-present-detail avg_us total=%lld scan=%lld drop=%lld map=%lld display=%lld unmap=%lld bytes=%llu boxes=%llu frames=%u\n",
+                 (long long)(perf_total_us / perf_frames),
+                 (long long)(perf_scan_us / perf_frames),
+                 (long long)(perf_drop_us / perf_frames),
+                 (long long)(perf_map_us / perf_frames),
+                 (long long)(perf_display_us / perf_frames),
+                 (long long)(perf_unmap_us / perf_frames),
+                 (unsigned long long)(perf_bytes / perf_frames),
+                 (unsigned long long)(perf_boxes / perf_frames),
+                 perf_frames);
+         fflush(stderr);
+         perf_frames = 0;
+         perf_scan_us = 0;
+         perf_drop_us = 0;
+         perf_map_us = 0;
+         perf_display_us = 0;
+         perf_unmap_us = 0;
+         perf_total_us = 0;
+         perf_bytes = 0;
+         perf_boxes = 0;
+      }
+   }
+   return true;
+}
+
+static bool
+d3d12_async_frontbuffer_queue(struct d3d12_screen *screen,
+                              struct pipe_context *pctx,
+                              struct d3d12_resource *res,
+                              unsigned level)
+{
+   static unsigned perf_frames;
+   static int64_t perf_alloc_us;
+   static int64_t perf_copycmd_us;
+   static int64_t perf_flush_us;
+   static int64_t perf_total_us;
+   struct d3d12_context *ctx = d3d12_context(pctx);
+   struct d3d12_async_frontbuffer *async = res->async_frontbuffer;
+   struct d3d12_async_frontbuffer_slot *slot = NULL;
+   struct pipe_resource *staging;
+   struct d3d12_transfer trans = {};
+   unsigned width = u_minify(res->base.b.width0, level);
+   unsigned height = u_minify(res->base.b.height0, level);
+   unsigned stride = align(util_format_get_stride(res->base.b.format, width),
+                           D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
+   unsigned size = stride * height;
+   bool perf = xv6_d3d12_perf_log_enabled();
+   int64_t t0 = perf ? xv6_d3d12_now_us() : 0;
+   int64_t t_alloc = 0;
+   int64_t t_copycmd = 0;
+   int64_t t_flush = 0;
+
+   if (!async) {
+      async = CALLOC_STRUCT(d3d12_async_frontbuffer);
+      if (!async)
+         return false;
+      res->async_frontbuffer = async;
+   }
+
+   for (unsigned attempt = 0; attempt < ARRAY_SIZE(async->slots); attempt++) {
+      unsigned idx = (async->next_slot + attempt) %
+                     ARRAY_SIZE(async->slots);
+      if (!async->slots[idx].pending) {
+         slot = &async->slots[idx];
+         async->next_slot = (idx + 1) % ARRAY_SIZE(async->slots);
+         break;
+      }
+   }
+   if (!slot)
+      return false;
+
+   if (!slot->staging || slot->width != width || slot->height != height ||
+       slot->stride != stride || slot->size != size) {
+      pipe_resource_reference(&slot->staging, NULL);
+      slot->width = width;
+      slot->height = height;
+      slot->stride = stride;
+      slot->size = size;
+      slot->staging = pipe_buffer_create(pctx->screen, 0, PIPE_USAGE_STAGING,
+                                         size);
+      if (!slot->staging)
+         return false;
+   }
+   if (perf)
+      t_alloc = xv6_d3d12_now_us();
+
+   trans.base.b.level = level;
+   u_box_3d(0, 0, 0, width, height, 1, &trans.base.b.box);
+   trans.base.b.stride = stride;
+   trans.base.b.layer_stride = size;
+   trans.base.b.offset = 0;
+
+   staging = slot->staging;
+   if (!d3d12_transfer_image_to_buf(ctx, res, d3d12_resource(staging),
+                                    &trans, 0))
+      return false;
+   if (perf)
+      t_copycmd = xv6_d3d12_now_us();
+
+   if (slot->fence)
+      screen->base.fence_reference(&screen->base, &slot->fence, NULL);
+   pctx->flush(pctx, &slot->fence, 0);
+   if (perf)
+      t_flush = xv6_d3d12_now_us();
+   if (!slot->fence)
+      return false;
+   slot->pending = true;
+   async->queued++;
+   slot->seq = async->queued;
+   if (perf && t0 > 0 && t_alloc >= t0 && t_copycmd >= t_alloc &&
+       t_flush >= t_copycmd) {
+      perf_frames++;
+      perf_alloc_us += t_alloc - t0;
+      perf_copycmd_us += t_copycmd - t_alloc;
+      perf_flush_us += t_flush - t_copycmd;
+      perf_total_us += t_flush - t0;
+      if (perf_frames >= 60 && xv6_d3d12_perf_log_enabled()) {
+         fprintf(stderr,
+                 "xv6-mesa: d3d12-frontbuffer-queue avg_us total=%lld alloc=%lld copycmd=%lld flush=%lld frames=%u\n",
+                 (long long)(perf_total_us / perf_frames),
+                 (long long)(perf_alloc_us / perf_frames),
+                 (long long)(perf_copycmd_us / perf_frames),
+                 (long long)(perf_flush_us / perf_frames),
+                 perf_frames);
+         fflush(stderr);
+         perf_frames = 0;
+         perf_alloc_us = 0;
+         perf_copycmd_us = 0;
+         perf_flush_us = 0;
+         perf_total_us = 0;
+      }
+   }
+   return true;
+}
+
+static bool
+d3d12_xv6_sync_frontbuffer_copy(struct d3d12_screen *screen,
+                                struct pipe_context *pctx,
+                                struct d3d12_resource *res,
+                                struct pipe_resource *pres,
+                                unsigned level,
+                                unsigned layer,
+                                bool *has_visible_pixels)
+{
+   struct sw_winsys *winsys = screen->winsys;
+   void *map;
+   pipe_transfer *transfer = nullptr;
+   void *res_map;
+   static unsigned probe_logs;
+
+   assert(res->dt);
+   if (has_visible_pixels)
+      *has_visible_pixels = false;
+   map = winsys->displaytarget_map(winsys, res->dt, 0);
+   if (!map)
+      return false;
+
+   res_map = pipe_texture_map(pctx, pres, level, layer, PIPE_MAP_READ, 0, 0,
+                              u_minify(pres->width0, level),
+                              u_minify(pres->height0, level),
+                              &transfer);
+   if (res_map) {
+      uint32_t samples[5] = { 0, 0, 0, 0, 0 };
+      unsigned nonblack = 0;
+      unsigned width = transfer->box.width;
+      unsigned height = transfer->box.height;
+      unsigned points[5][2] = {
+         { width / 2, height / 2 },
+         { width / 4, height / 4 },
+         { (width * 3) / 4, height / 4 },
+         { width / 4, (height * 3) / 4 },
+         { (width * 3) / 4, (height * 3) / 4 },
+      };
+
+      for (unsigned i = 0; i < ARRAY_SIZE(samples); i++) {
+         unsigned x = points[i][0] >= width ? width - 1 : points[i][0];
+         unsigned y = points[i][1] >= height ? height - 1 : points[i][1];
+         uint32_t p = 0;
+
+         memcpy(&p, (const uint8_t *)res_map + (size_t)y * transfer->stride +
+                    x * 4, sizeof(p));
+         samples[i] = p;
+         if ((p & 0x00ffffffu) != 0)
+            nonblack++;
+      }
+      if (has_visible_pixels)
+         *has_visible_pixels = nonblack > 0;
+      if (xv6_d3d12_perf_log_enabled() && probe_logs < 16) {
+         fprintf(stderr,
+                 "xv6-mesa: d3d12-sync-source probe=%u size=%ux%u stride=%d nonblack=%u samples=%08x,%08x,%08x,%08x,%08x\n",
+                 probe_logs, width, height, transfer->stride, nonblack,
+                 samples[0], samples[1], samples[2], samples[3], samples[4]);
+         fflush(stderr);
+         probe_logs++;
+      }
+      util_copy_rect((uint8_t *)map, pres->format, res->dt_stride, 0, 0,
+                     transfer->box.width, transfer->box.height,
+                     (const uint8_t *)res_map, transfer->stride, 0, 0);
+      pipe_texture_unmap(pctx, transfer);
+   }
+   winsys->displaytarget_unmap(winsys, res->dt);
+   return res_map != NULL;
+}
+
+static bool
+d3d12_flush_frontbuffer_async(struct d3d12_screen *screen,
+                              struct pipe_context *pctx,
+                              struct d3d12_resource *res,
+                              struct pipe_resource *pres,
+                              unsigned level,
+                              unsigned layer,
+                              void *winsys_drawable_handle,
+                              unsigned nboxes,
+                              struct pipe_box *sub_box)
+{
+   static unsigned perf_frames;
+   static int64_t perf_present_us;
+   static int64_t perf_queue_us;
+   static int64_t perf_total_us;
+   static uint64_t perf_queue_skips;
+   static uint64_t swap_seq;
+   bool copied;
+   bool queued = false;
+   bool perf;
+   int64_t t0 = 0;
+   int64_t t_present = 0;
+   int64_t t_queue = 0;
+   unsigned present_interval;
+   unsigned warmup_frames;
+   unsigned warmup_attempts;
+
+   if (!xv6_d3d12_async_frontbuffer_enabled() || res->dt_proxy || !res->dt)
+      return false;
+
+   pctx = threaded_context_unwrap_sync(pctx);
+   if (d3d12_xv6_direct_backbuffer_copy(screen, pctx, res, level,
+                                        winsys_drawable_handle, nboxes,
+                                        sub_box))
+      return true;
+
+   warmup_frames = xv6_d3d12_async_warmup_frames();
+   warmup_attempts = xv6_d3d12_async_warmup_attempts();
+   if (!res->async_frontbuffer) {
+      res->async_frontbuffer = CALLOC_STRUCT(d3d12_async_frontbuffer);
+      if (!res->async_frontbuffer)
+         return false;
+   }
+   if (res->async_frontbuffer->presented < warmup_frames &&
+       res->async_frontbuffer->warmup_attempts < warmup_attempts) {
+      bool visible = false;
+      bool displayed = d3d12_xv6_sync_frontbuffer_copy(screen, pctx, res, pres,
+                                                       level, layer, &visible);
+      res->async_frontbuffer->warmup_attempts++;
+      if (displayed) {
+         screen->winsys->displaytarget_display(screen->winsys, res->dt,
+                                               winsys_drawable_handle, nboxes,
+                                               sub_box);
+         if (visible)
+            res->async_frontbuffer->presented++;
+         (void)d3d12_async_frontbuffer_queue(screen, pctx, res, level);
+         return true;
+      }
+   }
+
+   perf = xv6_d3d12_perf_log_enabled();
+   t0 = perf ? xv6_d3d12_now_us() : 0;
+   present_interval = xv6_d3d12_present_interval();
+   swap_seq++;
+   if (present_interval <= 1 || (swap_seq % present_interval) == 0) {
+      copied = d3d12_async_frontbuffer_present_ready_display(screen, pctx, res,
+                                                             winsys_drawable_handle,
+                                                             nboxes, sub_box);
+   } else {
+      copied = false;
+   }
+   if (perf)
+      t_present = xv6_d3d12_now_us();
+   if (d3d12_async_frontbuffer_pending_count(res->async_frontbuffer) <
+       xv6_d3d12_async_max_pending()) {
+      queued = d3d12_async_frontbuffer_queue(screen, pctx, res, level);
+   }
+   if (perf)
+      t_queue = xv6_d3d12_now_us();
+   if (perf && !queued)
+      perf_queue_skips++;
+   if (perf && t0 > 0 && t_present >= t0 && t_queue >= t_present) {
+      perf_frames++;
+      perf_present_us += t_present - t0;
+      perf_queue_us += t_queue - t_present;
+      perf_total_us += t_queue - t0;
+      if (perf_frames >= 60 && xv6_d3d12_perf_log_enabled()) {
+         fprintf(stderr,
+                 "xv6-mesa: d3d12-frontbuffer-async avg_us total=%lld present=%lld queue=%lld interval=%u max_pending=%u queue_skips=%llu frames=%u\n",
+                 (long long)(perf_total_us / perf_frames),
+                 (long long)(perf_present_us / perf_frames),
+                 (long long)(perf_queue_us / perf_frames),
+                 present_interval, xv6_d3d12_async_max_pending(),
+                 (unsigned long long)perf_queue_skips,
+                 perf_frames);
+         fflush(stderr);
+         perf_frames = 0;
+         perf_present_us = 0;
+         perf_queue_us = 0;
+         perf_total_us = 0;
+         perf_queue_skips = 0;
+      }
+   }
+   return copied;
+}
+
 static void
 d3d12_flush_frontbuffer(struct pipe_screen * pscreen,
                         struct pipe_context *pctx,
@@ -700,6 +1608,13 @@ d3d12_flush_frontbuffer(struct pipe_screen * pscreen,
      return;
 
    assert(res->dt || res->dt_proxy);
+   if (xv6_d3d12_async_frontbuffer_enabled() && !res->dt_proxy && res->dt) {
+      (void)d3d12_flush_frontbuffer_async(screen, pctx, res, pres, level, layer,
+                                          winsys_drawable_handle, nboxes,
+                                          sub_box);
+      return;
+   }
+
    if (res->dt_proxy) {
      struct pipe_blit_info blit;
 
@@ -722,24 +1637,9 @@ d3d12_flush_frontbuffer(struct pipe_screen * pscreen,
      res = d3d12_resource(pres);
    }
 
-   assert(res->dt);
-   void *map = winsys->displaytarget_map(winsys, res->dt, 0);
-
-   if (map) {
-      pctx = threaded_context_unwrap_sync(pctx);
-      pipe_transfer *transfer = nullptr;
-      void *res_map = pipe_texture_map(pctx, pres, level, layer, PIPE_MAP_READ, 0, 0,
-                                        u_minify(pres->width0, level),
-                                        u_minify(pres->height0, level),
-                                        &transfer);
-      if (res_map) {
-         util_copy_rect((uint8_t*)map, pres->format, res->dt_stride, 0, 0,
-                        transfer->box.width, transfer->box.height,
-                        (const uint8_t*)res_map, transfer->stride, 0, 0);
-         pipe_texture_unmap(pctx, transfer);
-      }
-      winsys->displaytarget_unmap(winsys, res->dt);
-   }
+   pctx = threaded_context_unwrap_sync(pctx);
+   (void)d3d12_xv6_sync_frontbuffer_copy(screen, pctx, res, pres, level,
+                                         layer, NULL);
 
 #if defined(_WIN32) && !defined(_GAMING_XBOX) && defined(HAVE_GALLIUM_D3D12_GRAPHICS)
    // WindowFromDC is Windows-only, and this method requires an HWND, so only use it on Windows
@@ -1684,6 +2584,14 @@ d3d12_init_screen(struct d3d12_screen *screen, IUnknown *adapter)
       return false;
 
    screen->dev->QueryInterface(&screen->dev15);
+   screen->dev->QueryInterface(&screen->dev13);
+   if (screen->dev13) {
+      fprintf(stderr, "xv6-mesa: d3d12 ID3D12Device13 available for existing-heap present path\n");
+      fflush(stderr);
+   } else {
+      fprintf(stderr, "xv6-mesa: d3d12 ID3D12Device13 unavailable; using readback present path\n");
+      fflush(stderr);
+   }
 
    // Uses screen->dev15 so QI must be before this
    if (!d3d12_init_residency(screen))
