@@ -132,14 +132,66 @@ fence_reference(struct pipe_screen *pscreen,
    d3d12_fence_reference((struct d3d12_fence **)pptr, d3d12_fence(pfence));
 }
 
+static bool
+d3d12_fence_completed(ID3D12Fence *cmdqueue_fence, uint64_t target,
+                      bool *device_removed)
+{
+   uint64_t completed = cmdqueue_fence->GetCompletedValue();
+
+   *device_removed = false;
+   if (completed == UINT64_MAX) {
+      debug_printf("D3D12: fence completed value is UINT64_MAX; treating fence "
+                   "target %llu as not signaled (possible device removal)\n",
+                   (unsigned long long)target);
+      *device_removed = true;
+      return false;
+   }
+
+   return completed >= target;
+}
+
+static bool
+d3d12_fence_device_removed_after_event(ID3D12Fence *cmdqueue_fence,
+                                       uint64_t target)
+{
+   uint64_t completed = cmdqueue_fence->GetCompletedValue();
+
+   if (completed == UINT64_MAX) {
+      debug_printf("D3D12: fence completed value is UINT64_MAX after event; "
+                   "treating fence target %llu as not signaled "
+                   "(possible device removal)\n",
+                   (unsigned long long)target);
+      return true;
+   }
+
+   if (completed < target) {
+      static unsigned log_count;
+
+      if (log_count++ < 8) {
+         debug_printf("D3D12: fence event signaled before completed value "
+                      "caught up: completed=%llu target=%llu\n",
+                      (unsigned long long)completed,
+                      (unsigned long long)target);
+      }
+   }
+
+   return false;
+}
+
 bool
 d3d12_fence_finish(struct d3d12_fence *fence, uint64_t timeout_ns)
 {
-   assert(fence->type == PIPE_FD_TYPE_NATIVE_SYNC);
+   if (!fence || fence->type != PIPE_FD_TYPE_NATIVE_SYNC ||
+       !fence->cmdqueue_fence)
+      return false;
    if (fence->signaled)
       return true;
 
-   bool complete = fence->cmdqueue_fence->GetCompletedValue() >= fence->value;
+   bool device_removed = false;
+   bool complete = d3d12_fence_completed(fence->cmdqueue_fence, fence->value,
+                                         &device_removed);
+   if (device_removed)
+      return false;
    if (!complete && timeout_ns) {
       if (!fence->event) {
          fence->event = d3d12_fence_create_event(&fence->event_fd);
@@ -149,7 +201,26 @@ d3d12_fence_finish(struct d3d12_fence *fence, uint64_t timeout_ns)
       if (FAILED(fence->cmdqueue_fence->SetEventOnCompletion(fence->value,
                                                               fence->event)))
          return false;
-      complete = d3d12_fence_wait_event(fence->event, fence->event_fd, timeout_ns);
+      if (d3d12_fence_wait_event(fence->event, fence->event_fd, timeout_ns)) {
+         if (d3d12_fence_device_removed_after_event(fence->cmdqueue_fence,
+                                                    fence->value))
+            return false;
+         complete = true;
+      } else {
+         complete = d3d12_fence_completed(fence->cmdqueue_fence, fence->value,
+                                          &device_removed);
+         if (device_removed)
+            return false;
+         if (complete) {
+            static unsigned log_count;
+
+            if (log_count++ < 8) {
+               debug_printf("D3D12: fence event wait returned unsignaled, "
+                            "but completed value reached target %llu\n",
+                            (unsigned long long)fence->value);
+            }
+         }
+      }
    }
 
    fence->signaled = complete;

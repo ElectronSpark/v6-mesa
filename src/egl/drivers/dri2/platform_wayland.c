@@ -212,16 +212,31 @@ static const struct wl_interface *xv6_gpu_buffer_create_types[] = {
    NULL,
    NULL,
    NULL,
+   NULL,
+   NULL,
+   NULL,
+   NULL,
 };
 
 static const struct wl_message xv6_gpu_buffer_manager_requests[] = {
    { "create_buffer", "nuiiiu", xv6_gpu_buffer_create_types },
+   { "create_buffer_with_fence", "nuiiiuh", xv6_gpu_buffer_create_types },
+   { "create_d3d12_resource_buffer", "nhiiuuu",
+     xv6_gpu_buffer_create_types },
+   { "create_d3d12_resource_buffer_with_fence", "nhhiiuuu",
+     xv6_gpu_buffer_create_types },
+   { "create_d3d12_resource_buffer_luid", "nhuuiiuuu",
+     xv6_gpu_buffer_create_types },
+   { "create_d3d12_resource_buffer_with_fence_luid", "nhhuuiiuuu",
+     xv6_gpu_buffer_create_types },
+   { "create_d3d12_resource_buffer_with_fence_value_luid",
+     "nhhuuuuiiuuu", xv6_gpu_buffer_create_types },
 };
 
 static const struct wl_interface xv6_gpu_buffer_manager_interface = {
    "xv6_gpu_buffer_manager",
-   1,
-   1,
+   5,
+   7,
    xv6_gpu_buffer_manager_requests,
    0,
    NULL,
@@ -235,6 +250,50 @@ xv6_gpu_buffer_manager_create_buffer(struct wl_proxy *manager, uint32_t handle,
    return (struct wl_buffer *)wl_proxy_marshal_flags(
       manager, 0, &wl_buffer_interface, wl_proxy_get_version(manager), 0,
       NULL, handle, width, height, stride, format);
+}
+
+static struct wl_buffer *
+xv6_gpu_buffer_manager_create_d3d12_resource_buffer(struct wl_proxy *manager,
+                                                    int resource_fd,
+                                                    int32_t width,
+                                                    int32_t height,
+                                                    uint32_t format)
+{
+   return (struct wl_buffer *)wl_proxy_marshal_flags(
+      manager, 2, &wl_buffer_interface, wl_proxy_get_version(manager), 0,
+      NULL, resource_fd, width, height, format, 0, 0);
+}
+
+static struct wl_buffer *
+xv6_gpu_buffer_manager_create_d3d12_resource_buffer_luid(
+   struct wl_proxy *manager, int resource_fd, uint32_t luid_low,
+   uint32_t luid_high, int32_t width, int32_t height, uint32_t format)
+{
+   if (wl_proxy_get_version(manager) < 4 ||
+       (luid_low == 0 && luid_high == 0))
+      return xv6_gpu_buffer_manager_create_d3d12_resource_buffer(
+         manager, resource_fd, width, height, format);
+
+   return (struct wl_buffer *)wl_proxy_marshal_flags(
+      manager, 4, &wl_buffer_interface, wl_proxy_get_version(manager), 0,
+      NULL, resource_fd, luid_low, luid_high, width, height, format, 0, 0);
+}
+
+static struct wl_buffer *
+xv6_gpu_buffer_manager_create_d3d12_resource_buffer_with_fence_value_luid(
+   struct wl_proxy *manager, int resource_fd, int fence_fd,
+   uint64_t fence_value, uint32_t luid_low, uint32_t luid_high,
+   int32_t width, int32_t height, uint32_t format)
+{
+   if (wl_proxy_get_version(manager) < 5 || fence_fd < 0 ||
+       (luid_low == 0 && luid_high == 0))
+      return NULL;
+
+   return (struct wl_buffer *)wl_proxy_marshal_flags(
+      manager, 6, &wl_buffer_interface, wl_proxy_get_version(manager), 0,
+      NULL, resource_fd, fence_fd, (uint32_t)fence_value,
+      (uint32_t)(fence_value >> 32), luid_low, luid_high, width, height,
+      format, 0, 0);
 }
 
 #if DETECT_OS_XV6
@@ -3374,6 +3433,79 @@ dri2_wl_swrast_xv6_get_backbuffer_info(struct dri_drawable *drawable,
    return xv6_dri2_wayland_get_backbuffer_info(loaderPrivate, info) ? 1 : 0;
 }
 
+struct xv6_d3d12_present_buffer {
+   struct wl_buffer *buffer;
+};
+
+static void
+xv6_d3d12_present_buffer_release(void *data, struct wl_buffer *buffer)
+{
+   struct xv6_d3d12_present_buffer *present = data;
+
+   wl_buffer_destroy(buffer);
+   free(present);
+}
+
+static const struct wl_buffer_listener xv6_d3d12_present_buffer_listener = {
+   .release = xv6_d3d12_present_buffer_release,
+};
+
+static void
+dri2_wl_swrast_commit_backbuffer(struct dri2_egl_surface *dri2_surf);
+
+static unsigned char
+dri2_wl_swrast_present_d3d12_resource(struct dri_drawable *drawable,
+                                      int resource_fd,
+                                      int fence_fd,
+                                      uint64_t fence_value,
+                                      int width, int height,
+                                      unsigned int format,
+                                      unsigned int adapter_luid_low,
+                                      unsigned int adapter_luid_high,
+                                      void *loaderPrivate)
+{
+   struct dri2_egl_surface *dri2_surf = loaderPrivate;
+   struct dri2_egl_display *dri2_dpy;
+   struct xv6_d3d12_present_buffer *present;
+   struct wl_buffer *buffer;
+
+   (void)drawable;
+   if (!dri2_surf || resource_fd < 0 || fence_fd < 0 || fence_value == 0 ||
+       width <= 0 || height <= 0 ||
+       (adapter_luid_low == 0 && adapter_luid_high == 0))
+      return 0;
+   dri2_dpy = dri2_egl_display(dri2_surf->base.Resource.Display);
+   if (!dri2_dpy || !dri2_dpy->xv6_gpu_manager ||
+      wl_proxy_get_version(dri2_dpy->xv6_gpu_manager) < 5)
+      return 0;
+
+   present = calloc(1, sizeof(*present));
+   if (!present)
+      return 0;
+
+   buffer =
+      xv6_gpu_buffer_manager_create_d3d12_resource_buffer_with_fence_value_luid(
+         dri2_dpy->xv6_gpu_manager, resource_fd, fence_fd, fence_value,
+         adapter_luid_low, adapter_luid_high, width, height, format);
+   if (!buffer) {
+      free(present);
+      return 0;
+   }
+   close(resource_fd);
+   close(fence_fd);
+
+   present->buffer = buffer;
+   wl_proxy_set_queue((struct wl_proxy *)buffer, dri2_surf->wl_queue);
+   wl_buffer_add_listener(buffer, &xv6_d3d12_present_buffer_listener,
+                          present);
+   wl_surface_attach(dri2_surf->wayland_surface.wrapper, buffer,
+                     dri2_surf->dx, dri2_surf->dy);
+   wl_surface_damage(dri2_surf->wayland_surface.wrapper, 0, 0,
+                     INT32_MAX, INT32_MAX);
+   dri2_wl_swrast_commit_backbuffer(dri2_surf);
+   return 1;
+}
+
 static void
 dri2_wl_swrast_commit_backbuffer(struct dri2_egl_surface *dri2_surf)
 {
@@ -3864,7 +3996,7 @@ registry_handle_global_swrast(void *data, struct wl_registry *registry,
               !dri2_dpy->xv6_gpu_manager) {
       dri2_dpy->xv6_gpu_manager =
          wl_registry_bind(registry, name, &xv6_gpu_buffer_manager_interface,
-                          version > 1 ? 1 : version);
+                          version > 5 ? 5 : version);
    }
 
 }
@@ -3889,13 +4021,14 @@ static const struct dri2_egl_display_vtbl dri2_wl_swrast_display_vtbl = {
 };
 
 static const __DRIswrastLoaderExtension swrast_loader_extension = {
-   .base = {__DRI_SWRAST_LOADER, 7},
+   .base = {__DRI_SWRAST_LOADER, 10},
 
    .getDrawableInfo = dri2_wl_swrast_get_drawable_info,
    .putImage = dri2_wl_swrast_put_image,
    .getImage = dri2_wl_swrast_get_image,
    .putImage2 = dri2_wl_swrast_put_image2,
    .xv6GetBackbufferInfo = dri2_wl_swrast_xv6_get_backbuffer_info,
+   .xv6PresentD3D12Resource = dri2_wl_swrast_present_d3d12_resource,
 };
 
 static const __DRIextension *swrast_loader_extensions[] = {

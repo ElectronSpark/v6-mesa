@@ -59,6 +59,7 @@
 #include "util/u_sample_positions.h"
 #include "util/u_dl.h"
 #include <dxguids/dxguids.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "d3d12_interop_public.h"
@@ -77,6 +78,43 @@ xv6_d3d12_defer_old_batch_waits(void)
    if (opt)
       return strcmp(opt, "0") != 0 && strcmp(opt, "false") != 0;
    return driver && strcmp(driver, "d3d12") == 0;
+}
+
+static bool
+xv6_d3d12_wait_diag_enabled(const char *reason)
+{
+   const char *opt = getenv("XV6_D3D12_READBACK_DIAG");
+
+   if (!reason)
+      return false;
+   if (opt)
+      return strcmp(opt, "0") != 0 && strcmp(opt, "false") != 0;
+   return false;
+}
+
+static void
+xv6_d3d12_log_batch_wait(struct d3d12_batch *batch,
+                         const char *reason,
+                         const char *step,
+                         uint64_t timeout_ns)
+{
+   static unsigned log_count;
+   struct d3d12_fence *fence = batch ? batch->fence : NULL;
+   uint64_t completed = fence && fence->cmdqueue_fence ?
+      fence->cmdqueue_fence->GetCompletedValue() : 0;
+   uint64_t target = fence ? fence->value : 0;
+
+   if (!xv6_d3d12_wait_diag_enabled(reason) || log_count++ >= 96)
+      return;
+
+   fprintf(stderr,
+           "D3D12: xv6 wait %s reason=%s batch=%p submit_id=%llu "
+           "fence=%p target=%llu completed=%llu timeout_ns=%llu\n",
+           step, reason, (void *)batch,
+           (unsigned long long)(batch ? batch->submit_id : 0),
+           (void *)fence, (unsigned long long)target,
+           (unsigned long long)completed, (unsigned long long)timeout_ns);
+   fflush(stderr);
 }
 
 static void
@@ -182,22 +220,44 @@ d3d12_flush_cmdlist(struct d3d12_context *ctx)
    return true;
 }
 
-void
-d3d12_flush_cmdlist_and_wait(struct d3d12_context *ctx)
+bool
+d3d12_flush_cmdlist_and_wait_timeout(struct d3d12_context *ctx,
+                                     uint64_t timeout_ns,
+                                     const char *reason)
 {
    struct d3d12_batch *batch = d3d12_current_batch(ctx);
    bool defer_old_waits = xv6_d3d12_defer_old_batch_waits();
 
    if (!defer_old_waits) {
-      d3d12_foreach_submitted_batch(ctx, old_batch)
-         d3d12_reset_batch(ctx, old_batch, OS_TIMEOUT_INFINITE);
+      d3d12_foreach_submitted_batch(ctx, old_batch) {
+         xv6_d3d12_log_batch_wait(old_batch, reason, "old-begin", timeout_ns);
+         if (!d3d12_reset_batch(ctx, old_batch, timeout_ns)) {
+            xv6_d3d12_log_batch_wait(old_batch, reason, "old-timeout", timeout_ns);
+            return false;
+         }
+         xv6_d3d12_log_batch_wait(old_batch, reason, "old-done", timeout_ns);
+      }
    }
-   if (d3d12_flush_cmdlist(ctx))
-      d3d12_reset_batch(ctx, batch, OS_TIMEOUT_INFINITE);
+   if (d3d12_flush_cmdlist(ctx)) {
+      xv6_d3d12_log_batch_wait(batch, reason, "current-begin", timeout_ns);
+      if (!d3d12_reset_batch(ctx, batch, timeout_ns)) {
+         xv6_d3d12_log_batch_wait(batch, reason, "current-timeout", timeout_ns);
+         return false;
+      }
+      xv6_d3d12_log_batch_wait(batch, reason, "current-done", timeout_ns);
+   }
    if (defer_old_waits) {
       d3d12_foreach_submitted_batch(ctx, old_batch)
          d3d12_reset_batch(ctx, old_batch, 0);
    }
+
+   return true;
+}
+
+void
+d3d12_flush_cmdlist_and_wait(struct d3d12_context *ctx)
+{
+   d3d12_flush_cmdlist_and_wait_timeout(ctx, OS_TIMEOUT_INFINITE, NULL);
 }
 
 static void

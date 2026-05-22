@@ -45,9 +45,12 @@
 
 #include "util/libsync.h"
 
+#include <inttypes.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #ifdef HAVE_LIBDRM
 #include <xf86drm.h>
@@ -115,6 +118,157 @@ xv6_drisw_perf_log_enabled(void)
 
    return perf && perf[0] && strcmp(perf, "0") != 0 &&
           strcmp(perf, "false") != 0;
+}
+
+static bool
+xv6_drisw_d3d12_native_present_available(struct dri_drawable *drawable)
+{
+   const char *driver = getenv("GALLIUM_DRIVER");
+   const char *enable = getenv("XV6_D3D12_ENABLE_NATIVE_PRESENT");
+   const __DRIswrastLoaderExtension *loader;
+
+   if (!driver || strcmp(driver, "d3d12") != 0 || !drawable ||
+       !drawable->screen)
+      return false;
+   if (!enable || (strcmp(enable, "1") != 0 &&
+                   strcmp(enable, "true") != 0))
+      return false;
+   loader = drawable->screen->swrast_loader;
+   return loader && loader->base.version >= 10 &&
+          loader->xv6PresentD3D12Resource;
+}
+
+static bool
+xv6_drisw_d3d12_require_native_present(void)
+{
+   const char *driver = getenv("GALLIUM_DRIVER");
+   const char *opt = getenv("XV6_D3D12_REQUIRE_NATIVE_PRESENT");
+
+   if (!driver || strcmp(driver, "d3d12") != 0)
+      return false;
+   if (opt)
+      return strcmp(opt, "0") != 0 && strcmp(opt, "false") != 0;
+   return true;
+}
+
+static unsigned
+xv6_drisw_pipe_format_to_wl_shm(enum pipe_format format)
+{
+   switch (format) {
+   case PIPE_FORMAT_B8G8R8A8_UNORM:
+   case PIPE_FORMAT_B8G8R8A8_SRGB:
+      return 0; /* WL_SHM_FORMAT_ARGB8888 */
+   case PIPE_FORMAT_B8G8R8X8_UNORM:
+   case PIPE_FORMAT_B8G8R8X8_SRGB:
+      return 1; /* WL_SHM_FORMAT_XRGB8888 */
+   default:
+      return UINT_MAX;
+   }
+}
+
+static bool
+xv6_drisw_present_d3d12_shared(struct pipe_context *pipe,
+                               struct dri_drawable *drawable,
+                               struct pipe_resource *ptex)
+{
+   const __DRIswrastLoaderExtension *loader;
+   struct winsys_handle whandle;
+   unsigned wl_format;
+   unsigned adapter_luid_low = 0;
+   unsigned adapter_luid_high = 0;
+   struct pipe_fence_handle *fence = NULL;
+   int fence_fd = -1;
+   uint64_t fence_value = 0;
+   bool perf = xv6_drisw_perf_log_enabled();
+   static unsigned diag_logs;
+
+   if (!xv6_drisw_d3d12_native_present_available(drawable) || !ptex ||
+       !ptex->screen || !ptex->screen->resource_get_handle) {
+      if (perf || diag_logs++ < 8)
+         fprintf(stderr, "xv6-mesa: d3d12-present skip unavailable drawable=%p ptex=%p\n",
+                 (void *)drawable, (void *)ptex);
+      return false;
+   }
+
+   wl_format = xv6_drisw_pipe_format_to_wl_shm(ptex->format);
+   if (wl_format == UINT_MAX) {
+      if (perf || diag_logs++ < 8)
+         fprintf(stderr, "xv6-mesa: d3d12-present skip format pipe=%u\n",
+                 ptex->format);
+      return false;
+   }
+
+   memset(&whandle, 0, sizeof(whandle));
+   whandle.type = WINSYS_HANDLE_TYPE_FD;
+   if (pipe->flush_resource)
+      pipe->flush_resource(pipe, ptex);
+   if (!ptex->screen->resource_get_handle(ptex->screen, pipe, ptex,
+                                          &whandle,
+                                          PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE)) {
+      if (perf || diag_logs++ < 8)
+         fprintf(stderr,
+                 "xv6-mesa: d3d12-present share-handle failed size=%ux%u fmt=%u bind=0x%x\n",
+                 ptex->width0, ptex->height0, ptex->format, ptex->bind);
+      return false;
+   }
+   if (ptex->screen->get_device_luid) {
+      char luid[PIPE_LUID_SIZE] = {0};
+
+      ptex->screen->get_device_luid(ptex->screen, luid);
+      memcpy(&adapter_luid_low, luid, sizeof(adapter_luid_low));
+      memcpy(&adapter_luid_high, luid + sizeof(adapter_luid_low),
+             sizeof(adapter_luid_high));
+   }
+   pipe->flush(pipe, &fence, 0);
+   if (!fence || !ptex->screen->fence_get_win32_handle) {
+      if (perf || diag_logs++ < 8)
+         fprintf(stderr,
+                 "xv6-mesa: d3d12-present fence export unavailable fence=%p get_handle=%p\n",
+                 (void *)fence,
+                 (void *)ptex->screen->fence_get_win32_handle);
+      if (fence)
+         ptex->screen->fence_reference(ptex->screen, &fence, NULL);
+      close(whandle.handle);
+      return false;
+   }
+   fence_fd = (int)(intptr_t)
+      ptex->screen->fence_get_win32_handle(ptex->screen, fence,
+                                           &fence_value);
+   ptex->screen->fence_reference(ptex->screen, &fence, NULL);
+   if (fence_fd < 0 || fence_value == 0) {
+      if (perf || diag_logs++ < 8)
+         fprintf(stderr,
+                 "xv6-mesa: d3d12-present fence shared-handle failed fd=%d value=%" PRIu64 "\n",
+                 fence_fd, fence_value);
+      close(whandle.handle);
+      if (fence_fd >= 0)
+         close(fence_fd);
+      return false;
+   }
+
+   loader = drawable->screen->swrast_loader;
+   if (perf || diag_logs++ < 8)
+      fprintf(stderr,
+              "xv6-mesa: d3d12-present share-handle fd=%d fence_fd=%d fence_value=%" PRIu64 " size=%ux%u fmt=%u bind=0x%x luid=%08x:%08x handle_format=%" PRIu64 " modifier=0x%" PRIx64 " stride=%u offset=%u size_bytes=%" PRIu64 "\n",
+              whandle.handle, fence_fd, fence_value, ptex->width0,
+              ptex->height0, ptex->format, ptex->bind, adapter_luid_low,
+              adapter_luid_high, whandle.format, whandle.modifier,
+              whandle.stride, whandle.offset, whandle.size);
+   if (loader->xv6PresentD3D12Resource(drawable, whandle.handle, fence_fd,
+                                       fence_value,
+                                       (int)ptex->width0,
+                                       (int)ptex->height0, wl_format,
+                                       adapter_luid_low, adapter_luid_high,
+                                       drawable->loaderPrivate))
+      return true;
+
+   if (perf || diag_logs++ < 8)
+      fprintf(stderr,
+              "xv6-mesa: d3d12-present wayland attach failed fd=%d size=%ux%u\n",
+              whandle.handle, ptex->width0, ptex->height0);
+   close(whandle.handle);
+   close(fence_fd);
+   return false;
 }
 
 static inline void
@@ -262,6 +416,19 @@ drisw_present_texture(struct pipe_context *pipe, struct dri_drawable *drawable,
    if (screen->swrast_no_present)
       return;
 
+   if (xv6_drisw_present_d3d12_shared(pipe, drawable, ptex))
+      return;
+   if (xv6_drisw_d3d12_require_native_present()) {
+      static unsigned no_readback_logs;
+
+      if (no_readback_logs++ < 8) {
+         fprintf(stderr,
+                 "xv6-mesa: d3d12 native present unavailable; refusing DRI software/readback present\n");
+         fflush(stderr);
+      }
+      return;
+   }
+
    screen->base.screen->flush_frontbuffer(screen->base.screen, pipe, ptex, 0, 0, drawable, nrects, sub_box);
 }
 
@@ -327,6 +494,7 @@ drisw_copy_to_front(struct pipe_context *pipe,
 static void
 drisw_swap_buffers_with_damage(struct dri_drawable *drawable, int nrects, const int *rects)
 {
+   static unsigned xv6_swap_entry_logs;
    static unsigned xv6_perf_frames;
    static int64_t xv6_perf_thread_us;
    static int64_t xv6_perf_flush_us;
@@ -364,6 +532,11 @@ drisw_swap_buffers_with_damage(struct dri_drawable *drawable, int nrects, const 
       t_thread = xv6_d3d12_now_us();
 
    ptex = drawable->textures[ST_ATTACHMENT_BACK_LEFT];
+   if (xv6_swap_entry_logs++ < 8)
+      fprintf(stderr,
+              "xv6-mesa: drisw-swap entry drawable=%p ptex=%p native_present=%d nrects=%d\n",
+              (void *)drawable, (void *)ptex,
+              xv6_drisw_d3d12_native_present_available(drawable), nrects);
 
    if (ptex) {
       struct pipe_fence_handle *fence = NULL;
@@ -650,6 +823,9 @@ drisw_allocate_textures(struct dri_context *stctx,
          /* if we don't do any present, no need for display targets */
          if (statts[i] != ST_ATTACHMENT_DEPTH_STENCIL && !screen->swrast_no_present)
             bind |= PIPE_BIND_DISPLAY_TARGET;
+         if (statts[i] != ST_ATTACHMENT_DEPTH_STENCIL &&
+             xv6_drisw_d3d12_native_present_available(drawable))
+            bind |= PIPE_BIND_SHARED;
 
          if (format == PIPE_FORMAT_NONE)
             continue;

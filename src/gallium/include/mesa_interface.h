@@ -230,6 +230,27 @@ typedef struct {
     unsigned char (*xv6GetBackbufferInfo)(struct dri_drawable *drawable,
                                           void *info,
                                           void *loaderPrivate);
+
+    /**
+     * Optional xv6 Wayland D3D12 shared-resource present path.
+     *
+     * The loader consumes resource_fd and fence_fd on success.
+     *
+     * Adapter LUID parts are D3DKMT/WINLUID LowPart and HighPart. A nonzero
+     * LUID lets the compositor reject cross-adapter imports instead of
+     * guessing adapter 0.
+     *
+     * \since 10
+     */
+   unsigned char (*xv6PresentD3D12Resource)(struct dri_drawable *drawable,
+                                            int resource_fd,
+                                            int fence_fd,
+                                            uint64_t fence_value,
+                                            int width, int height,
+                                            unsigned int format,
+                                            unsigned int adapter_luid_low,
+                                            unsigned int adapter_luid_high,
+                                            void *loaderPrivate);
 } __DRIswrastLoaderExtension;
 
 /**

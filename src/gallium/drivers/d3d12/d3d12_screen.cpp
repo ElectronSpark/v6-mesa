@@ -992,6 +992,7 @@ d3d12_xv6_direct_backbuffer_copy(struct d3d12_screen *screen,
    whandle.size = info.size;
    dst = screen->base.resource_from_handle(&screen->base, &templ, &whandle,
                                            PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE);
+   heap = NULL; /* WINSYS_HANDLE_TYPE_D3D12_RES import consumes this ref. */
    if (!dst)
       goto out;
 
@@ -1005,10 +1006,30 @@ d3d12_xv6_direct_backbuffer_copy(struct d3d12_screen *screen,
       goto out;
    pctx->flush(pctx, &fence, 0);
    t_copy = xv6_d3d12_now_us();
-   if (!fence ||
-       !screen->base.fence_finish(&screen->base, NULL, fence,
-                                  OS_TIMEOUT_INFINITE))
+   if (!fence || !d3d12_fence(fence)->cmdqueue_fence) {
+      if (fail_logs++ < 8) {
+         HRESULT reason = screen->dev->GetDeviceRemovedReason();
+         fprintf(stderr,
+                 "xv6-mesa: d3d12-direct-backbuffer submit produced no usable fence fence=%p cmdqueue_fence=%p device_reason=0x%08x\n",
+                 fence,
+                 fence ? d3d12_fence(fence)->cmdqueue_fence : NULL,
+                 (unsigned)reason);
+         fflush(stderr);
+      }
       goto out;
+   }
+   if (!screen->base.fence_finish(&screen->base, NULL, fence,
+                                  OS_TIMEOUT_INFINITE)) {
+      if (fail_logs++ < 8) {
+         HRESULT reason = screen->dev->GetDeviceRemovedReason();
+         fprintf(stderr,
+                 "xv6-mesa: d3d12-direct-backbuffer fence wait failed fence=%p cmdqueue_fence=%p device_reason=0x%08x\n",
+                 fence, d3d12_fence(fence)->cmdqueue_fence,
+                 (unsigned)reason);
+         fflush(stderr);
+      }
+      goto out;
+   }
    t_wait = xv6_d3d12_now_us();
 
    dt = screen->winsys->displaytarget_create_mapped(screen->winsys,
@@ -1615,6 +1636,13 @@ d3d12_flush_frontbuffer(struct pipe_screen * pscreen,
       return;
    }
 
+   pctx = threaded_context_unwrap_sync(pctx);
+   if (!res->dt_proxy &&
+       d3d12_xv6_direct_backbuffer_copy(screen, pctx, res, level,
+                                        winsys_drawable_handle, nboxes,
+                                        sub_box))
+      return;
+
    if (res->dt_proxy) {
      struct pipe_blit_info blit;
 
@@ -1637,7 +1665,6 @@ d3d12_flush_frontbuffer(struct pipe_screen * pscreen,
      res = d3d12_resource(pres);
    }
 
-   pctx = threaded_context_unwrap_sync(pctx);
    (void)d3d12_xv6_sync_frontbuffer_copy(screen, pctx, res, pres, level,
                                          layer, NULL);
 
@@ -1795,9 +1822,14 @@ create_device(util_dl_library *d3d12_mod, IUnknown *adapter, ID3D12DeviceFactory
       typedef HRESULT(WINAPI *PFN_D3D12CREATEDEVICE)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
       PFN_D3D12CREATEDEVICE D3D12CreateDevice = (PFN_D3D12CREATEDEVICE)util_dl_get_proc_address(d3d12_mod, "D3D12CreateDevice");
       if (!D3D12CreateDevice) {
-         debug_printf("D3D12: failed to load D3D12CreateDevice from D3D12.DLL\n");
+         const char *err = util_dl_error();
+         fprintf(stderr, "D3D12: dlsym D3D12CreateDevice failed: %s\n",
+                 err ? err : "unknown error");
+         debug_printf("D3D12: failed to load D3D12CreateDevice from D3D12.DLL/libd3d12.so\n");
          return NULL;
       }
+      fprintf(stderr, "D3D12: D3D12CreateDevice symbol=%p\n",
+              (void *)D3D12CreateDevice);
       /* Fallback to D3D_FEATURE_LEVEL_11_0 for D3D12 versions without generic support */
       HRESULT hr = D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_1_0_GENERIC, IID_PPV_ARGS(&dev));
       if (FAILED(hr)) {
@@ -2118,7 +2150,6 @@ d3d12_screen_get_fd(struct pipe_screen *pscreen)
       return -1;
 }
 
-#ifdef _WIN32
 static void* d3d12_fence_get_win32_handle(struct pipe_screen *pscreen,
                                           struct pipe_fence_handle *fence_handle,
                                           uint64_t *fence_value)
@@ -2126,17 +2157,52 @@ static void* d3d12_fence_get_win32_handle(struct pipe_screen *pscreen,
    struct d3d12_screen *screen = d3d12_screen(pscreen);
    struct d3d12_fence* fence = (struct d3d12_fence*) fence_handle;
    HANDLE shared_handle = nullptr;
-   screen->dev->CreateSharedHandle(fence->cmdqueue_fence,
-                                   NULL,
-                                   GENERIC_ALL,
-                                   NULL,
-                                   &shared_handle);
-   if(shared_handle)
-      *fence_value = fence->value;
+   static unsigned fail_logs;
+
+   if (fence_value)
+      *fence_value = 0;
+   if (!fence || !fence->cmdqueue_fence || !fence_value) {
+      if (fail_logs++ < 8) {
+         fprintf(stderr,
+                 "D3D12: xv6 fence shared-handle export unavailable "
+                 "fence=%p cmdqueue_fence=%p fence_value=%p\n",
+                 (void *)fence,
+                 fence ? fence->cmdqueue_fence : NULL,
+                 (void *)fence_value);
+         fflush(stderr);
+      }
+      return NULL;
+   }
+
+   HRESULT hr = screen->dev->CreateSharedHandle(fence->cmdqueue_fence,
+                                                NULL,
+                                                GENERIC_ALL,
+                                                NULL,
+                                                &shared_handle);
+   if (FAILED(hr) || !shared_handle) {
+      if (fail_logs++ < 8) {
+         HRESULT reason = screen->dev->GetDeviceRemovedReason();
+         fprintf(stderr,
+                 "D3D12: xv6 fence CreateSharedHandle failed "
+                 "hr=0x%08x device_reason=0x%08x fence=%p "
+                 "cmdqueue_fence=%p value=%llu type=%u\n",
+                 (unsigned)hr,
+                 (unsigned)reason,
+                 (void *)fence,
+                 fence->cmdqueue_fence,
+                 (unsigned long long)fence->value,
+                 (unsigned)fence->type);
+         fflush(stderr);
+      }
+      return NULL;
+   }
+
+   *fence_value = fence->value;
 
    return (void*) shared_handle;
 }
 
+#ifdef _WIN32
 static void *d3d12_fence_get_win32_event([[maybe_unused]] struct pipe_screen *pscreen,
                                          struct pipe_fence_handle *fence_handle)
 {
@@ -2246,27 +2312,42 @@ d3d12_init_screen_base(struct d3d12_screen *screen, struct sw_winsys *winsys, LU
    screen->base.create_fence_win32 = d3d12_create_fence_win32;
    screen->base.interop_query_device_info = d3d12_interop_query_device_info;
    screen->base.interop_export_object = d3d12_interop_export_object;
-#ifdef _WIN32
    screen->base.fence_get_win32_handle = d3d12_fence_get_win32_handle;
+#ifdef _WIN32
    screen->base.fence_get_win32_event = d3d12_fence_get_win32_event;
 #endif
    screen->base.query_memory_info = d3d12_query_memory_info;
 
-   screen->d3d12_mod = util_dl_open(
-      UTIL_DL_PREFIX
 #ifdef _GAMING_XBOX_SCARLETT
-      "d3d12_xs"
+#define XV6_D3D12_LIBRARY_BASENAME "d3d12_xs"
 #elif defined(_GAMING_XBOX)
-      "d3d12_x"
+#define XV6_D3D12_LIBRARY_BASENAME "d3d12_x"
 #else
-      "d3d12"
+#define XV6_D3D12_LIBRARY_BASENAME "d3d12"
 #endif
-      UTIL_DL_EXT
-   );
+   const char *d3d12_candidates[] = {
+      UTIL_DL_PREFIX XV6_D3D12_LIBRARY_BASENAME UTIL_DL_EXT,
+      "/lib/" UTIL_DL_PREFIX XV6_D3D12_LIBRARY_BASENAME UTIL_DL_EXT,
+      "/usr/lib/" UTIL_DL_PREFIX XV6_D3D12_LIBRARY_BASENAME UTIL_DL_EXT,
+      "/usr/lib/x86_64-linux-gnu/" UTIL_DL_PREFIX XV6_D3D12_LIBRARY_BASENAME UTIL_DL_EXT,
+   };
+
+   for (unsigned i = 0; i < ARRAY_SIZE(d3d12_candidates); i++) {
+      screen->d3d12_mod = util_dl_open(d3d12_candidates[i]);
+      if (screen->d3d12_mod) {
+         fprintf(stderr, "D3D12: loaded D3D12 library '%s'\n",
+                 d3d12_candidates[i]);
+         break;
+      }
+      const char *err = util_dl_error();
+      fprintf(stderr, "D3D12: dlopen D3D12 '%s' failed: %s\n",
+              d3d12_candidates[i], err ? err : "unknown error");
+   }
    if (!screen->d3d12_mod) {
-      debug_printf("D3D12: failed to load D3D12.DLL\n");
+      debug_printf("D3D12: failed to load D3D12.DLL/libd3d12.so\n");
       return false;
    }
+#undef XV6_D3D12_LIBRARY_BASENAME
    return true;
 }
 

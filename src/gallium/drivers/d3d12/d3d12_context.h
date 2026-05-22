@@ -352,6 +352,11 @@ d3d12_disable_fake_so_buffers(struct d3d12_context *ctx);
 bool
 d3d12_flush_cmdlist(struct d3d12_context *ctx);
 
+bool
+d3d12_flush_cmdlist_and_wait_timeout(struct d3d12_context *ctx,
+                                     uint64_t timeout_ns,
+                                     const char *reason);
+
 void
 d3d12_flush_cmdlist_and_wait(struct d3d12_context *ctx);
 

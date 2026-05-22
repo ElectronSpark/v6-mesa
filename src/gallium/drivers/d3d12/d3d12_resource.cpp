@@ -40,6 +40,9 @@
 
 #include <dxguids/dxguids.h>
 #include <memory>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #ifndef _GAMING_XBOX
 #include <wrl/client.h>
@@ -50,6 +53,121 @@ using Microsoft::WRL::ComPtr;
  // This is only added to winadapter.h in newer DirectX-Headers
 #define GENERIC_ALL 0x10000000L
 #endif
+
+static bool
+xv6_d3d12_shared_backbuffer_enabled(void)
+{
+   const char *native = getenv("XV6_D3D12_ENABLE_NATIVE_PRESENT");
+   const char *opt = getenv("XV6_D3D12_SHARED_BACKBUFFER");
+
+   if (opt)
+      return strcmp(opt, "0") != 0 && strcmp(opt, "false") != 0;
+   return native && (strcmp(native, "1") == 0 || strcmp(native, "true") == 0);
+}
+
+static bool
+xv6_d3d12_resource_is_native_present_backbuffer(const struct pipe_resource *templ)
+{
+   return xv6_d3d12_shared_backbuffer_enabled() &&
+          (templ->bind & PIPE_BIND_DISPLAY_TARGET) &&
+          (templ->bind & PIPE_BIND_RENDER_TARGET) &&
+          templ->target != PIPE_BUFFER;
+}
+
+static bool
+xv6_d3d12_resource_needs_shared_heap(const struct pipe_resource *templ)
+{
+   if (templ->bind & PIPE_BIND_SHARED)
+      return true;
+   return xv6_d3d12_resource_is_native_present_backbuffer(templ);
+}
+
+static bool
+xv6_d3d12_resource_needs_simultaneous_access(const struct pipe_resource *templ)
+{
+   const char *opt = getenv("XV6_D3D12_SHARED_SIMULTANEOUS_ACCESS");
+
+   if (!(templ->bind & PIPE_BIND_SHARED))
+      return false;
+   if (xv6_d3d12_resource_is_native_present_backbuffer(templ))
+      return opt && strcmp(opt, "0") != 0 && strcmp(opt, "false") != 0;
+   return true;
+}
+
+static bool
+xv6_d3d12_shared_cross_adapter_enabled(void)
+{
+   const char *opt = getenv("XV6_D3D12_SHARED_CROSS_ADAPTER");
+
+   return opt && strcmp(opt, "0") != 0 && strcmp(opt, "false") != 0;
+}
+
+static bool
+xv6_d3d12_copy_export_enabled(void)
+{
+   const char *native = getenv("XV6_D3D12_ENABLE_NATIVE_PRESENT");
+   const char *opt = getenv("XV6_D3D12_COPY_EXPORT");
+
+   if (!native || (strcmp(native, "1") != 0 && strcmp(native, "true") != 0))
+      return false;
+   if (opt)
+      return strcmp(opt, "0") != 0 && strcmp(opt, "false") != 0;
+   return true;
+}
+
+static bool
+xv6_d3d12_readback_diag_enabled(void)
+{
+   const char *opt = getenv("XV6_D3D12_READBACK_DIAG");
+
+   return opt && strcmp(opt, "0") != 0 && strcmp(opt, "false") != 0;
+}
+
+static uint64_t
+xv6_d3d12_readback_wait_timeout_ns(void)
+{
+   const char *opt = getenv("XV6_D3D12_READBACK_WAIT_MS");
+   uint64_t timeout_ms = 10000;
+
+   if (opt && opt[0]) {
+      char *end = NULL;
+      unsigned long long parsed = strtoull(opt, &end, 10);
+      if (end && end != opt)
+         timeout_ms = parsed;
+   }
+
+   return timeout_ms * 1000000ull;
+}
+
+static void
+xv6_d3d12_log_readback(const char *step,
+                       const struct pipe_resource *pres,
+                       const struct pipe_transfer *ptrans,
+                       unsigned usage,
+                       unsigned staging_size)
+{
+   static unsigned log_count;
+
+   if (!xv6_d3d12_readback_diag_enabled() || log_count++ >= 96)
+      return;
+
+   fprintf(stderr,
+           "D3D12: xv6 readback %s res=%p target=%u fmt=%u size=%ux%ux%u "
+           "level=%u usage=0x%x box=%d,%d,%d %dx%dx%d stride=%d "
+           "layer_stride=%llu staging_size=%u timeout_ms=%llu\n",
+           step, (const void *)pres, pres ? pres->target : 0,
+           pres ? pres->format : 0, pres ? pres->width0 : 0,
+           pres ? pres->height0 : 0, pres ? pres->depth0 : 0,
+           ptrans ? ptrans->level : 0, usage,
+           ptrans ? ptrans->box.x : 0, ptrans ? ptrans->box.y : 0,
+           ptrans ? ptrans->box.z : 0, ptrans ? ptrans->box.width : 0,
+           ptrans ? ptrans->box.height : 0, ptrans ? ptrans->box.depth : 0,
+           ptrans ? ptrans->stride : 0,
+           (unsigned long long)(ptrans ? ptrans->layer_stride : 0),
+           staging_size,
+           (unsigned long long)(xv6_d3d12_readback_wait_timeout_ns() / 1000000ull));
+   fflush(stderr);
+}
 
 static bool
 can_map_directly(struct pipe_resource *pres)
@@ -203,6 +321,8 @@ init_texture(struct d3d12_screen *screen,
              uint64_t placed_offset)
 {
    ID3D12Resource *d3d12_res;
+   bool xv6_shared_heap = xv6_d3d12_resource_needs_shared_heap(templ);
+   D3D12_HEAP_FLAGS xv6_requested_heap_flags = D3D12_HEAP_FLAG_NONE;
 
    res->mip_levels = templ->last_level + 1;
    res->dxgi_format = d3d12_get_format(templ->format);
@@ -256,10 +376,6 @@ init_texture(struct d3d12_screen *screen,
    if (templ->bind & PIPE_BIND_RENDER_TARGET)
       desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
 
-   // This is expected from D3D11 openers for D3D12 created shareable resources
-   if (templ->bind & PIPE_BIND_SHARED)
-      desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
-
    if (templ->bind & PIPE_BIND_DEPTH_STENCIL) {
       desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
 
@@ -308,6 +424,18 @@ init_texture(struct d3d12_screen *screen,
             desc.Format = d3d12_get_typeless_format(templ->format);
          }
       }
+   }
+
+   if (xv6_shared_heap && templ->target != PIPE_BUFFER &&
+       !(templ->bind & PIPE_BIND_DEPTH_STENCIL)) {
+      desc.Flags &= ~D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+      if (xv6_d3d12_resource_needs_simultaneous_access(templ))
+         desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
+      if (xv6_d3d12_shared_cross_adapter_enabled())
+         desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER;
+      desc.Format = res->dxgi_format;
+      format_cast_list = nullptr;
+      num_castable_formats = 0;
    }
 
    if (templ->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_LINEAR))
@@ -360,8 +488,14 @@ init_texture(struct d3d12_screen *screen,
             D3D12_HEAP_FLAG_CREATE_NOT_RESIDENT : D3D12_HEAP_FLAG_NONE;
          init_residency = screen->support_create_not_resident ? d3d12_evicted : d3d12_resident;
 
-         if (templ->bind & PIPE_BIND_SHARED)
+         if (xv6_shared_heap) {
+            heap_flags &= ~D3D12_HEAP_FLAG_CREATE_NOT_RESIDENT;
             heap_flags |= D3D12_HEAP_FLAG_SHARED;
+            if (xv6_d3d12_shared_cross_adapter_enabled())
+               heap_flags |= D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER;
+            init_residency = d3d12_permanently_resident;
+         }
+         xv6_requested_heap_flags = heap_flags;
 
          hres = screen->dev10->CreateCommittedResource3(&heap_pris,
                                                         heap_flags,
@@ -391,8 +525,14 @@ init_texture(struct d3d12_screen *screen,
             D3D12_HEAP_FLAG_CREATE_NOT_RESIDENT : D3D12_HEAP_FLAG_NONE;
          init_residency = screen->support_create_not_resident ? d3d12_evicted : d3d12_resident;
 
-         if (templ->bind & PIPE_BIND_SHARED)
+         if (xv6_shared_heap) {
+            heap_flags &= ~D3D12_HEAP_FLAG_CREATE_NOT_RESIDENT;
             heap_flags |= D3D12_HEAP_FLAG_SHARED;
+            if (xv6_d3d12_shared_cross_adapter_enabled())
+               heap_flags |= D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER;
+            init_residency = d3d12_permanently_resident;
+         }
+         xv6_requested_heap_flags = heap_flags;
 
          hres = screen->dev->CreateCommittedResource(&heap_pris,
                                                      heap_flags,
@@ -403,8 +543,52 @@ init_texture(struct d3d12_screen *screen,
       }
    }
 
-   if (FAILED(hres))
+   if (FAILED(hres)) {
+      if (xv6_shared_heap) {
+         fprintf(stderr,
+                 "D3D12: xv6 shared resource create failed hr=0x%08x "
+                 "size=%ux%u fmt=%u bind=0x%x res_flags=0x%x layout=%u "
+                 "heap_flags=0x%x samples=%u mips=%u target=%u\n",
+                 (unsigned)hres, templ->width0, templ->height0,
+                 templ->format, templ->bind, (unsigned)desc.Flags,
+                 (unsigned)desc.Layout, (unsigned)xv6_requested_heap_flags,
+                 MAX2(templ->nr_samples, 1), templ->last_level + 1,
+                 templ->target);
+         fflush(stderr);
+      }
       return false;
+   }
+
+   if (xv6_shared_heap) {
+      static unsigned xv6_shared_create_logs;
+      D3D12_HEAP_PROPERTIES actual_heap_props = {};
+      D3D12_HEAP_FLAGS actual_heap_flags = D3D12_HEAP_FLAG_NONE;
+      HRESULT heap_hr =
+         d3d12_res->GetHeapProperties(&actual_heap_props,
+                                      &actual_heap_flags);
+
+      if (xv6_shared_create_logs++ < 16) {
+         fprintf(stderr,
+                 "D3D12: xv6 shared resource create ok size=%ux%u "
+                 "fmt=%u bind=0x%x dxgi=%u res_flags=0x%x layout=%u "
+                 "requested_heap_flags=0x%x heap_hr=0x%08x "
+                 "actual_heap_flags=0x%x heap_type=%u cpu_page=%u "
+                 "mem_pool=%u creation_node=%u visible_node=%u "
+                 "samples=%u mips=%u target=%u residency=%u\n",
+                 templ->width0, templ->height0, templ->format, templ->bind,
+                 (unsigned)desc.Format, (unsigned)desc.Flags,
+                 (unsigned)desc.Layout, (unsigned)xv6_requested_heap_flags,
+                 (unsigned)heap_hr, (unsigned)actual_heap_flags,
+                 (unsigned)actual_heap_props.Type,
+                 (unsigned)actual_heap_props.CPUPageProperty,
+                 (unsigned)actual_heap_props.MemoryPoolPreference,
+                 actual_heap_props.CreationNodeMask,
+                 actual_heap_props.VisibleNodeMask,
+                 MAX2(templ->nr_samples, 1), templ->last_level + 1,
+                 templ->target, (unsigned)init_residency);
+         fflush(stderr);
+      }
+   }
 
    if (screen->winsys && (templ->bind & PIPE_BIND_DISPLAY_TARGET)) {
       struct sw_winsys *winsys = screen->winsys;
@@ -824,6 +1008,238 @@ invalid:
 }
 
 static bool
+d3d12_resource_export_fd(struct d3d12_screen *screen,
+                         struct pipe_resource *pres,
+                         struct winsys_handle *handle,
+                         const char *tag)
+{
+   struct d3d12_resource *res = d3d12_resource(pres);
+   ID3D12Resource *d3d12_res = d3d12_resource_resource(res);
+   HANDLE d3d_handle = nullptr;
+   D3D12_RESOURCE_DESC desc = {};
+   D3D12_HEAP_PROPERTIES heap_props = {};
+   D3D12_HEAP_FLAGS heap_flags = D3D12_HEAP_FLAG_NONE;
+   D3D12_RESOURCE_ALLOCATION_INFO alloc_info = {};
+   HRESULT heap_hr = E_FAIL;
+   HRESULT reason = S_OK;
+
+   if (!d3d12_res) {
+      fprintf(stderr,
+              "D3D12: xv6 shared handle export has no resource tag=%s "
+              "pres=%p bind=0x%x\n",
+              tag, pres, pres ? pres->bind : 0);
+      fflush(stderr);
+      return false;
+   }
+
+   desc = GetDesc(d3d12_res);
+   heap_hr = d3d12_res->GetHeapProperties(&heap_props, &heap_flags);
+   alloc_info = GetResourceAllocationInfo(screen->dev, 0, 1, &desc);
+
+   HRESULT make_resident_hr = S_OK;
+   if (!res->bo ||
+       res->bo->residency_status != d3d12_permanently_resident) {
+      ID3D12Pageable *pageable = d3d12_res;
+      make_resident_hr = screen->dev->MakeResident(1, &pageable);
+   }
+
+   if (FAILED(make_resident_hr)) {
+      reason = screen->dev->GetDeviceRemovedReason();
+      fprintf(stderr,
+              "D3D12: xv6 MakeResident before shared handle failed "
+              "tag=%s hr=0x%08x device_reason=0x%08x res=%p "
+              "size=%ux%u fmt=%u bind=0x%x flags=0x%x layout=%u "
+              "heap_hr=0x%08x heap_flags=0x%x heap_type=%u alloc=%llu\n",
+              tag,
+              (unsigned)make_resident_hr,
+              (unsigned)reason,
+              d3d12_res,
+              pres->width0,
+              pres->height0,
+              pres->format,
+              pres->bind,
+              (unsigned)desc.Flags,
+              (unsigned)desc.Layout,
+              (unsigned)heap_hr,
+              (unsigned)heap_flags,
+              (unsigned)heap_props.Type,
+              (unsigned long long)alloc_info.SizeInBytes);
+      fflush(stderr);
+      return false;
+   }
+
+   HRESULT hr =
+      screen->dev->CreateSharedHandle(d3d12_res,
+                                      nullptr,
+                                      GENERIC_ALL,
+                                      nullptr,
+                                      &d3d_handle);
+
+   if (FAILED(hr) || !d3d_handle) {
+      reason = screen->dev->GetDeviceRemovedReason();
+      fprintf(stderr,
+              "D3D12: xv6 CreateSharedHandle failed hr=0x%08x "
+              "device_reason=0x%08x tag=%s res=%p size=%ux%u fmt=%u "
+              "bind=0x%x flags=0x%x layout=%u heap_hr=0x%08x "
+              "heap_flags=0x%x heap_type=%u cpu_page=%u mem_pool=%u "
+              "creation_node=%u visible_node=%u alloc=%llu align=%llu\n",
+              (unsigned)hr,
+              (unsigned)reason,
+              tag,
+              d3d12_res,
+              pres->width0,
+              pres->height0,
+              pres->format,
+              pres->bind,
+              (unsigned)desc.Flags,
+              (unsigned)desc.Layout,
+              (unsigned)heap_hr,
+              (unsigned)heap_flags,
+              (unsigned)heap_props.Type,
+              (unsigned)heap_props.CPUPageProperty,
+              (unsigned)heap_props.MemoryPoolPreference,
+              heap_props.CreationNodeMask,
+              heap_props.VisibleNodeMask,
+              (unsigned long long)alloc_info.SizeInBytes,
+              (unsigned long long)alloc_info.Alignment);
+      fflush(stderr);
+      debug_printf("D3D12: xv6 CreateSharedHandle failed hr=0x%08x "
+                   "device_reason=0x%08x tag=%s res=%p size=%ux%u "
+                   "fmt=%u bind=0x%x flags=0x%x layout=%u "
+                   "heap_hr=0x%08x heap_flags=0x%x heap_type=%u\n",
+                   (unsigned)hr,
+                   (unsigned)reason,
+                   tag,
+                   d3d12_res,
+                   pres->width0,
+                   pres->height0,
+                   pres->format,
+                   pres->bind,
+                   (unsigned)desc.Flags,
+                   (unsigned)desc.Layout,
+                   (unsigned)heap_hr,
+                   (unsigned)heap_flags,
+                   (unsigned)heap_props.Type);
+      return false;
+   }
+
+#ifdef _WIN32
+   handle->handle = d3d_handle;
+#else
+   handle->handle = (int)(intptr_t)d3d_handle;
+#endif
+   handle->format = pres->format;
+   handle->modifier = ~0ull;
+   {
+      static unsigned xv6_export_success_logs;
+
+      if (xv6_export_success_logs++ < 16) {
+         fprintf(stderr,
+                 "D3D12: xv6 shared handle export ok tag=%s fd=%d "
+                 "res=%p size=%ux%u fmt=%u bind=0x%x res_flags=0x%x "
+                 "layout=%u heap_hr=0x%08x heap_flags=0x%x "
+                 "heap_type=%u cpu_page=%u mem_pool=%u alloc=%llu "
+                 "align=%llu handle_format=%llu modifier=0x%llx\n",
+                 tag, handle->handle, d3d12_res, pres->width0,
+                 pres->height0, pres->format, pres->bind,
+                 (unsigned)desc.Flags, (unsigned)desc.Layout,
+                 (unsigned)heap_hr, (unsigned)heap_flags,
+                 (unsigned)heap_props.Type,
+                 (unsigned)heap_props.CPUPageProperty,
+                 (unsigned)heap_props.MemoryPoolPreference,
+                 (unsigned long long)alloc_info.SizeInBytes,
+                 (unsigned long long)alloc_info.Alignment,
+                 (unsigned long long)handle->format,
+                 (unsigned long long)handle->modifier);
+         fflush(stderr);
+      }
+   }
+   return true;
+}
+
+static bool
+xv6_d3d12_copy_export_fd(struct pipe_screen *pscreen,
+                         struct pipe_context *pcontext,
+                         struct pipe_resource *pres,
+                         struct winsys_handle *handle)
+{
+   struct d3d12_screen *screen = d3d12_screen(pscreen);
+   struct pipe_resource templ;
+   struct pipe_resource *shared = NULL;
+   struct pipe_fence_handle *fence = NULL;
+   struct pipe_box src_box;
+   bool ok = false;
+
+   if (!xv6_d3d12_copy_export_enabled() || !pcontext ||
+       pres->target == PIPE_BUFFER || pres->nr_samples > 1 ||
+       pres->last_level != 0 || pres->array_size != 1 ||
+       (pres->bind & PIPE_BIND_DEPTH_STENCIL))
+      return false;
+
+   memset(&templ, 0, sizeof(templ));
+   templ.target = pres->target;
+   templ.format = pres->format;
+   templ.width0 = pres->width0;
+   templ.height0 = pres->height0;
+   templ.depth0 = pres->depth0;
+   templ.array_size = pres->array_size;
+   templ.last_level = 0;
+   templ.nr_samples = 0;
+   templ.nr_storage_samples = 0;
+   templ.usage = PIPE_USAGE_DEFAULT;
+   templ.bind = PIPE_BIND_SHARED | PIPE_BIND_SAMPLER_VIEW;
+
+   shared = pscreen->resource_create(pscreen, &templ);
+   if (!shared) {
+      fprintf(stderr,
+              "D3D12: xv6 copy-export shared resource create failed "
+              "size=%ux%u fmt=%u bind=0x%x\n",
+              pres->width0, pres->height0, pres->format, pres->bind);
+      fflush(stderr);
+      return false;
+   }
+
+   memset(&src_box, 0, sizeof(src_box));
+   src_box.width = pres->width0;
+   src_box.height = pres->height0;
+   src_box.depth = pres->depth0 ? pres->depth0 : 1;
+   pcontext->resource_copy_region(pcontext, shared, 0, 0, 0, 0, pres, 0,
+                                  &src_box);
+   if (pcontext->flush_resource)
+      pcontext->flush_resource(pcontext, shared);
+   pcontext->flush(pcontext, &fence, 0);
+   if (!fence ||
+       !pscreen->fence_finish(pscreen, pcontext, fence, OS_TIMEOUT_INFINITE)) {
+      fprintf(stderr,
+              "D3D12: xv6 copy-export GPU copy fence failed size=%ux%u fmt=%u\n",
+              pres->width0, pres->height0, pres->format);
+      fflush(stderr);
+      goto out;
+   }
+
+   ok = d3d12_resource_export_fd(screen, shared, handle, "copy-export");
+   if (ok) {
+      fprintf(stderr,
+              "D3D12: xv6 copy-export shared handle fd=%d size=%ux%u fmt=%u src_bind=0x%x shared_bind=0x%x handle_format=%llu modifier=0x%llx\n",
+              handle->handle,
+              pres->width0,
+              pres->height0,
+              pres->format,
+              pres->bind,
+              shared->bind,
+              (unsigned long long)handle->format,
+              (unsigned long long)handle->modifier);
+      fflush(stderr);
+   }
+
+out:
+   if (fence)
+      pscreen->fence_reference(pscreen, &fence, NULL);
+   pipe_resource_reference(&shared, NULL);
+   return ok;
+}
+
+static bool
 d3d12_resource_get_handle(struct pipe_screen *pscreen,
                           struct pipe_context *pcontext,
                           struct pipe_resource *pres,
@@ -838,24 +1254,9 @@ d3d12_resource_get_handle(struct pipe_screen *pscreen,
       handle->com_obj = d3d12_resource_resource(res);
       return true;
    case WINSYS_HANDLE_TYPE_FD: {
-      HANDLE d3d_handle = nullptr;
-
-      screen->dev->CreateSharedHandle(d3d12_resource_resource(res),
-                                      nullptr,
-                                      GENERIC_ALL,
-                                      nullptr,
-                                      &d3d_handle);
-      if (!d3d_handle)
-         return false;
-      
-#ifdef _WIN32
-      handle->handle = d3d_handle;
-#else
-      handle->handle = (int)(intptr_t)d3d_handle;
-#endif
-      handle->format = pres->format;
-      handle->modifier = ~0ull;
-      return true;
+      if (d3d12_resource_export_fd(screen, pres, handle, "direct"))
+         return true;
+      return xv6_d3d12_copy_export_fd(pscreen, pcontext, pres, handle);
    }
    default:
       return false;
@@ -1555,6 +1956,14 @@ private:
    bool mapped;
 };
 
+static bool
+xv6_d3d12_flush_readback(struct d3d12_context *ctx,
+                         const struct pipe_resource *pres,
+                         const struct pipe_transfer *ptrans,
+                         unsigned usage,
+                         unsigned staging_size,
+                         const char *reason);
+
 /* Combined depth-stencil needs a special handling for reading back: DX handled
  * depth and stencil parts as separate resources and handles copying them only
  * by using seperate texture copy calls with different formats. So create two
@@ -1616,6 +2025,9 @@ read_zs_surface(struct d3d12_context *ctx, struct d3d12_resource *res,
       return NULL;
    }
 
+   xv6_d3d12_log_readback("copy-zs-depth-begin", &res->base.b,
+                          &trans->base.b, PIPE_MAP_READ,
+                          trans->base.b.layer_stride);
    if (!d3d12_transfer_image_to_buf(ctx, res, depth_buffer, trans, 0))
       return NULL;
 
@@ -1627,17 +2039,29 @@ read_zs_surface(struct d3d12_context *ctx, struct d3d12_resource *res,
       return NULL;
    }
 
+   xv6_d3d12_log_readback("copy-zs-stencil-begin", &res->base.b,
+                          &trans->base.b, PIPE_MAP_READ,
+                          trans->base.b.layer_stride);
    if (!d3d12_transfer_image_to_buf(ctx, res, stencil_buffer, trans, 1))
       return NULL;
 
-   d3d12_flush_cmdlist_and_wait(ctx);
+   if (!xv6_d3d12_flush_readback(ctx, &res->base.b, &trans->base.b,
+                                 PIPE_MAP_READ, trans->base.b.layer_stride,
+                                 "flush-zs"))
+      return NULL;
 
+   xv6_d3d12_log_readback("map-zs-depth-begin", &res->base.b,
+                          &trans->base.b, PIPE_MAP_READ,
+                          trans->base.b.layer_stride);
    uint8_t *depth_ptr = (uint8_t *)depth_buffer.map();
    if (!depth_ptr) {
       debug_printf("Mapping staging depth buffer failed\n");
       return NULL;
    }
 
+   xv6_d3d12_log_readback("map-zs-stencil-begin", &res->base.b,
+                          &trans->base.b, PIPE_MAP_READ,
+                          trans->base.b.layer_stride);
    uint8_t *stencil_ptr =  (uint8_t *)stencil_buffer.map();
    if (!stencil_ptr) {
       debug_printf("Mapping staging stencil buffer failed\n");
@@ -1775,6 +2199,54 @@ write_zs_surface(struct pipe_context *pctx, struct d3d12_resource *res,
 #define BUFFER_MAP_ALIGNMENT 64
 
 static void *
+transfer_map_fail(struct d3d12_transfer *trans,
+                  slab_child_pool *transfer_pool,
+                  unsigned usage)
+{
+   if (!trans)
+      return NULL;
+   if (trans->data)
+      free(trans->data);
+   if (trans->staging_res)
+      pipe_resource_reference(&trans->staging_res, NULL);
+   if (usage & PIPE_MAP_THREAD_SAFE)
+      FREE(trans);
+   else
+      slab_free(transfer_pool, trans);
+   return NULL;
+}
+
+static bool
+xv6_d3d12_flush_readback(struct d3d12_context *ctx,
+                         const struct pipe_resource *pres,
+                         const struct pipe_transfer *ptrans,
+                         unsigned usage,
+                         unsigned staging_size,
+                         const char *reason)
+{
+   uint64_t timeout_ns = xv6_d3d12_readback_wait_timeout_ns();
+
+   xv6_d3d12_log_readback(reason, pres, ptrans, usage, staging_size);
+   if (!d3d12_flush_cmdlist_and_wait_timeout(ctx, timeout_ns, reason)) {
+      fprintf(stderr,
+              "D3D12: xv6 readback %s timeout/failure after %llu ms "
+              "res=%p fmt=%u target=%u box=%d,%d,%d %dx%dx%d "
+              "staging_size=%u\n",
+              reason, (unsigned long long)(timeout_ns / 1000000ull),
+              (const void *)pres, pres ? pres->format : 0,
+              pres ? pres->target : 0,
+              ptrans ? ptrans->box.x : 0, ptrans ? ptrans->box.y : 0,
+              ptrans ? ptrans->box.z : 0, ptrans ? ptrans->box.width : 0,
+              ptrans ? ptrans->box.height : 0, ptrans ? ptrans->box.depth : 0,
+              staging_size);
+      fflush(stderr);
+      return false;
+   }
+   xv6_d3d12_log_readback("flush-done", pres, ptrans, usage, staging_size);
+   return true;
+}
+
+static void *
 d3d12_transfer_map(struct pipe_context *pctx,
                    struct pipe_resource *pres,
                    unsigned level,
@@ -1798,9 +2270,9 @@ d3d12_transfer_map(struct pipe_context *pctx,
          &ctx->transfer_pool_unsync : &ctx->transfer_pool;
       trans = (struct d3d12_transfer *)slab_zalloc(transfer_pool);
    }
-   struct pipe_transfer *ptrans = &trans->base.b;
    if (!trans)
       return NULL;
+   struct pipe_transfer *ptrans = &trans->base.b;
 
    ptrans->level = level;
    ptrans->usage = (enum pipe_map_flags)usage;
@@ -1822,13 +2294,8 @@ d3d12_transfer_map(struct pipe_context *pctx,
       }
 
       range = linear_range(box, ptrans->stride, ptrans->layer_stride);
-      if (!synchronize(ctx, res, usage, &range)) {
-         if (usage & PIPE_MAP_THREAD_SAFE)
-            FREE(trans);
-         else
-            slab_free(transfer_pool, trans);
-         return NULL;
-      }
+      if (!synchronize(ctx, res, usage, &range))
+         return transfer_map_fail(trans, transfer_pool, usage);
       ptr = d3d12_bo_map(res->bo, &range);
    } else if (unlikely(pres->format == PIPE_FORMAT_Z24_UNORM_S8_UINT ||
                        pres->format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT)) {
@@ -1868,7 +2335,7 @@ d3d12_transfer_map(struct pipe_context *pctx,
                                               staging_usage,
                                               staging_res_size);
       if (!trans->staging_res)
-         return NULL;
+         return transfer_map_fail(trans, transfer_pool, usage);
 
       struct d3d12_resource *staging_res = d3d12_resource(trans->staging_res);
 
@@ -1887,19 +2354,40 @@ d3d12_transfer_map(struct pipe_context *pctx,
                                                        &original_box,
                                                        ptrans/*inout*/);
             /* Perform the readback*/
+            xv6_d3d12_log_readback("copy-yuv-plane-begin", planes[plane_slice],
+                                   ptrans, usage, staging_res_size);
             if(!d3d12_transfer_image_to_buf(ctx, d3d12_resource(planes[plane_slice]), staging_res, trans, 0)){
-               return NULL;
+               fprintf(stderr,
+                       "D3D12: xv6 readback copy-yuv-plane failed plane=%u "
+                       "fmt=%u staging_size=%u\n",
+                       plane_slice, planes[plane_slice]->format,
+                       staging_res_size);
+               fflush(stderr);
+               return transfer_map_fail(trans, transfer_pool, usage);
             }
          }
          ptrans->box = original_box;
-         d3d12_flush_cmdlist_and_wait(ctx);
+         if (!xv6_d3d12_flush_readback(ctx, pres, ptrans, usage,
+                                       staging_res_size, "flush-yuv"))
+            return transfer_map_fail(trans, transfer_pool, usage);
       }
 
       /* Map the whole staging buffer containing all the planes contiguously*/
       /* Just offset the resulting ptr to the according plane offset*/
 
-      range.End = staging_res_size - range.Begin;
+      range.End = staging_res_size;
+      xv6_d3d12_log_readback("map-yuv-begin", pres, ptrans, usage,
+                             staging_res_size);
       uint8_t* all_planes_map = (uint8_t*) d3d12_bo_map(staging_res->bo, &range);
+      if (!all_planes_map) {
+         fprintf(stderr,
+                 "D3D12: xv6 readback map-yuv failed staging_size=%u\n",
+                 staging_res_size);
+         fflush(stderr);
+         return transfer_map_fail(trans, transfer_pool, usage);
+      }
+      xv6_d3d12_log_readback("map-yuv-done", pres, ptrans, usage,
+                             staging_res_size);
 
       ptrans->stride = strides[res->plane_slice];
       ptrans->layer_stride = layer_strides[res->plane_slice];
@@ -1949,13 +2437,8 @@ d3d12_transfer_map(struct pipe_context *pctx,
       trans->staging_res = pipe_buffer_create(pctx->screen, 0,
                                               staging_usage,
                                               staging_res_size);
-      if (!trans->staging_res) {
-         if (usage & PIPE_MAP_THREAD_SAFE)
-            FREE(trans);
-         else
-            slab_free(transfer_pool, trans);
-         return NULL;
-      }
+      if (!trans->staging_res)
+         return transfer_map_fail(trans, transfer_pool, usage);
 
       struct d3d12_resource *staging_res = d3d12_resource(trans->staging_res);
 
@@ -1964,18 +2447,48 @@ d3d12_transfer_map(struct pipe_context *pctx,
          if (pres->target == PIPE_BUFFER) {
             uint64_t src_offset = box->x;
             uint64_t dst_offset = src_offset % BUFFER_MAP_ALIGNMENT;
+            xv6_d3d12_log_readback("copy-buffer-begin", pres, ptrans, usage,
+                                   staging_res_size);
             transfer_buf_to_buf(ctx, res, staging_res, src_offset, dst_offset, box->width);
-         } else
+         } else {
+            xv6_d3d12_log_readback("copy-image-begin", pres, ptrans, usage,
+                                   staging_res_size);
             ret = d3d12_transfer_image_to_buf(ctx, res, staging_res, trans, 0);
-         if (!ret)
-            return NULL;
-         d3d12_flush_cmdlist_and_wait(ctx);
+         }
+         if (!ret) {
+            fprintf(stderr,
+                    "D3D12: xv6 readback copy enqueue failed fmt=%u "
+                    "target=%u staging_size=%u\n",
+                    pres->format, pres->target, staging_res_size);
+            fflush(stderr);
+            return transfer_map_fail(trans, transfer_pool, usage);
+         }
+         if (!xv6_d3d12_flush_readback(ctx, pres, ptrans, usage,
+                                       staging_res_size, "flush-transfer"))
+            return transfer_map_fail(trans, transfer_pool, usage);
       }
 
-      range.End = staging_res_size - range.Begin;
+      range.End = staging_res_size;
 
+      xv6_d3d12_log_readback("map-transfer-begin", pres, ptrans, usage,
+                             staging_res_size);
       ptr = d3d12_bo_map(staging_res->bo, &range);
+      if (!ptr) {
+         fprintf(stderr,
+                 "D3D12: xv6 readback map-transfer failed fmt=%u "
+                 "target=%u staging_size=%u range=%llu..%llu\n",
+                 pres->format, pres->target, staging_res_size,
+                 (unsigned long long)range.Begin,
+                 (unsigned long long)range.End);
+         fflush(stderr);
+         return transfer_map_fail(trans, transfer_pool, usage);
+      }
+      xv6_d3d12_log_readback("map-transfer-done", pres, ptrans, usage,
+                             staging_res_size);
    }
+
+   if (!ptr)
+      return transfer_map_fail(trans, transfer_pool, usage);
 
    pipe_resource_reference(&ptrans->resource, pres);
    *transfer = ptrans;
@@ -2030,7 +2543,7 @@ d3d12_transfer_unmap(struct pipe_context *pctx,
             assert(ptrans->box.x >= 0);
             range.Begin = res->base.b.target == PIPE_BUFFER ?
                (unsigned)ptrans->box.x % BUFFER_MAP_ALIGNMENT : 0;
-            range.End = staging_res->base.b.width0 - range.Begin;
+            range.End = staging_res->base.b.width0;
             
             d3d12_bo_unmap(staging_res->bo, &range);
             pipe_box original_box = ptrans->box;
@@ -2056,7 +2569,7 @@ d3d12_transfer_unmap(struct pipe_context *pctx,
             assert(ptrans->box.x >= 0);
             range.Begin = res->base.b.target == PIPE_BUFFER ?
                (unsigned)ptrans->box.x % BUFFER_MAP_ALIGNMENT : 0;
-            range.End = staging_res->base.b.width0 - range.Begin;
+            range.End = staging_res->base.b.width0;
          }
          d3d12_bo_unmap(staging_res->bo, &range);
 
