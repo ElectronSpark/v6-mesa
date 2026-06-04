@@ -332,6 +332,14 @@ dri2_drm_image_get_buffers(struct dri_drawable *driDrawable, unsigned int format
       return 0;
 
    bo = gbm_dri_bo(dri2_surf->back->bo);
+   if (bo->image == NULL) {
+#if DETECT_OS_XV6
+      fprintf(stderr,
+              "xv6-mesa: dri2_drm_image_get_buffers got non-image GBM BO mask=0x%x\n",
+              buffer_mask);
+#endif
+      return 0;
+   }
    buffers->image_mask = __DRI_IMAGE_BUFFER_BACK;
    buffers->back = bo->image;
 

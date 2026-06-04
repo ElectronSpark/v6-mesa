@@ -134,6 +134,24 @@ xv6_mesa_wayland_inplace_present_enabled(void)
    return driver && strcmp(driver, "d3d12") == 0;
 }
 
+static unsigned
+xv6_mesa_wayland_color_buffer_limit(unsigned fallback)
+{
+   const char *env = getenv("XV6_MESA_WAYLAND_COLOR_BUFFERS");
+   char *end = NULL;
+   unsigned long value;
+
+   if (!env || !env[0])
+      return fallback;
+
+   value = strtoul(env, &end, 0);
+   if (end == env || value == 0)
+      return fallback;
+   if (value > fallback)
+      return fallback;
+   return (unsigned)value;
+}
+
 static int64_t
 xv6_mesa_now_us(void)
 {
@@ -1557,12 +1575,24 @@ wait_for_free_buffer(struct dri2_egl_display *dri2_dpy,
                      struct dri2_egl_surface *dri2_surf)
 {
    MESA_TRACE_FUNC();
+   unsigned color_buffer_count =
+      xv6_mesa_wayland_color_buffer_limit(ARRAY_SIZE(dri2_surf->color_buffers));
+   static unsigned color_buffer_logs;
+
+   if (color_buffer_count < ARRAY_SIZE(dri2_surf->color_buffers) &&
+       color_buffer_logs++ < 4) {
+      fprintf(stderr,
+              "xv6-mesa: wayland color buffer diagnostic limit=%u default=%u\n",
+              color_buffer_count,
+              (unsigned)ARRAY_SIZE(dri2_surf->color_buffers));
+      fflush(stderr);
+   }
 
    /* There might be a buffer release already queued that wasn't processed */
    wl_display_dispatch_queue_pending(dri2_dpy->wl_dpy, dri2_surf->wl_queue);
 
    while (dri2_surf->back == NULL) {
-      for (int i = 0; i < ARRAY_SIZE(dri2_surf->color_buffers); i++) {
+      for (unsigned i = 0; i < color_buffer_count; i++) {
          /* Get an unlocked buffer, preferably one with a dri_buffer
           * already allocated and with minimum age.
           */
@@ -2126,9 +2156,37 @@ dri2_wl_swap_buffers_with_damage(_EGLDisplay *disp, _EGLSurface *draw,
                                  const EGLint *rects, EGLint n_rects)
 {
    static unsigned swap_logs;
+   static unsigned swap_perf_frames;
+   static int64_t swap_perf_flush_drawable_us;
+   static int64_t swap_perf_throttle_us;
+   static int64_t swap_perf_update_us;
+   static int64_t swap_perf_framecb_us;
+   static int64_t swap_perf_buffer_us;
+   static int64_t swap_perf_attach_us;
+   static int64_t swap_perf_damage_us;
+   static int64_t swap_perf_blit_us;
+   static int64_t swap_perf_feedback_us;
+   static int64_t swap_perf_commit_us;
+   static int64_t swap_perf_sync_us;
+   static int64_t swap_perf_wlflush_us;
+   static int64_t swap_perf_total_us;
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_surface *dri2_surf = dri2_egl_surface(draw);
    struct mesa_trace_flow flow = { 0 };
+   bool perf = xv6_mesa_perf_log_enabled();
+   int64_t t0 = perf ? xv6_mesa_now_us() : 0;
+   int64_t t_flush_drawable = t0;
+   int64_t t_throttle = t0;
+   int64_t t_update = t0;
+   int64_t t_framecb = t0;
+   int64_t t_buffer = t0;
+   int64_t t_attach = t0;
+   int64_t t_damage = t0;
+   int64_t t_blit = t0;
+   int64_t t_feedback = t0;
+   int64_t t_commit = t0;
+   int64_t t_sync = t0;
+   int64_t t_wlflush = t0;
 
    if (!dri2_surf->wl_win)
       return _eglError(EGL_BAD_NATIVE_WINDOW, "dri2_swap_buffers");
@@ -2150,12 +2208,17 @@ dri2_wl_swap_buffers_with_damage(_EGLDisplay *disp, _EGLSurface *draw,
     *     a crash because 'current' becomes NULL).
     *   - using any wl_* function because accessing them from this thread
     *     and glthread causes troubles (see #7624 and #8136)
-    */
+   */
    dri2_flush_drawable_for_swapbuffers(disp, draw);
    dri_invalidate_drawable(dri2_surf->dri_drawable);
+   if (perf)
+      t_flush_drawable = xv6_mesa_now_us();
 
-   if (dri2_surf->throttle_callback && throttle(dri2_dpy, dri2_surf) == -1)
+   if (!xv6_mesa_wayland_throttle_disabled() &&
+       dri2_surf->throttle_callback && throttle(dri2_dpy, dri2_surf) == -1)
       return -1;
+   if (perf)
+      t_throttle = xv6_mesa_now_us();
 
    for (int i = 0; i < ARRAY_SIZE(dri2_surf->color_buffers); i++)
       if (dri2_surf->color_buffers[i].age > 0)
@@ -2165,6 +2228,8 @@ dri2_wl_swap_buffers_with_damage(_EGLDisplay *disp, _EGLSurface *draw,
     * rendering. */
    if (update_buffers_if_needed(dri2_surf, &flow) < 0)
       return _eglError(EGL_BAD_ALLOC, "dri2_swap_buffers");
+   if (perf)
+      t_update = xv6_mesa_now_us();
 
    if (draw->SwapInterval > 0) {
       dri2_surf->throttle_callback =
@@ -2172,6 +2237,8 @@ dri2_wl_swap_buffers_with_damage(_EGLDisplay *disp, _EGLSurface *draw,
       wl_callback_add_listener(dri2_surf->throttle_callback, &throttle_listener,
                                dri2_surf);
    }
+   if (perf)
+      t_framecb = xv6_mesa_now_us();
 
    dri2_surf->back->age = 1;
    dri2_surf->current = dri2_surf->back;
@@ -2199,6 +2266,8 @@ dri2_wl_swap_buffers_with_damage(_EGLDisplay *disp, _EGLSurface *draw,
 
       loader_wayland_buffer_set_flow(&dri2_surf->current->wayland_buffer, &flow);
    }
+   if (perf)
+      t_buffer = xv6_mesa_now_us();
 
    wl_surface_attach(dri2_surf->wayland_surface.wrapper,
                      dri2_surf->current->wayland_buffer.buffer,
@@ -2210,6 +2279,8 @@ dri2_wl_swap_buffers_with_damage(_EGLDisplay *disp, _EGLSurface *draw,
    /* reset resize growing parameters */
    dri2_surf->dx = 0;
    dri2_surf->dy = 0;
+   if (perf)
+      t_attach = xv6_mesa_now_us();
 
    /* If the compositor doesn't support damage_buffer, we deliberately
     * ignore the damage region and post maximum damage, due to
@@ -2217,6 +2288,8 @@ dri2_wl_swap_buffers_with_damage(_EGLDisplay *disp, _EGLSurface *draw,
    if (!try_damage_buffer(dri2_surf, rects, n_rects))
       wl_surface_damage(dri2_surf->wayland_surface.wrapper, 0, 0, INT32_MAX,
                         INT32_MAX);
+   if (perf)
+      t_damage = xv6_mesa_now_us();
 
    if (dri2_dpy->fd_render_gpu != dri2_dpy->fd_display_gpu) {
       _EGLContext *ctx = _eglGetCurrentContext();
@@ -2229,26 +2302,88 @@ dri2_wl_swap_buffers_with_damage(_EGLDisplay *disp, _EGLSurface *draw,
          dri2_surf->base.Height, 0);
       dri_flush_drawable(dri_drawable);
    }
+   if (perf)
+      t_blit = xv6_mesa_now_us();
 
    loader_wayland_presentation_feedback(&dri2_surf->wayland_presentation,
                                         &dri2_surf->current->wayland_buffer,
                                         NULL);
+   if (perf)
+      t_feedback = xv6_mesa_now_us();
 
    wl_surface_commit(dri2_surf->wayland_surface.wrapper);
+   if (perf)
+      t_commit = xv6_mesa_now_us();
 
    /* If we're not waiting for a frame callback then we'll at least throttle
     * to a sync callback so that we always give a chance for the compositor to
     * handle the commit and send a release event before checking for a free
     * buffer */
-   if (dri2_surf->throttle_callback == NULL) {
+   if (!xv6_mesa_wayland_throttle_disabled() &&
+       dri2_surf->throttle_callback == NULL) {
       dri2_surf->throttle_callback = wl_display_sync(dri2_surf->wl_dpy_wrapper);
       wl_callback_add_listener(dri2_surf->throttle_callback, &throttle_listener,
                                dri2_surf);
    }
+   if (perf)
+      t_sync = xv6_mesa_now_us();
 
    wl_display_flush(dri2_dpy->wl_dpy);
+   if (perf)
+      t_wlflush = xv6_mesa_now_us();
    if (swap_logs <= 8)
       xv6_mesa_log("wl swap_buffers done");
+
+   if (perf && t0 > 0) {
+      swap_perf_frames++;
+      swap_perf_flush_drawable_us += t_flush_drawable - t0;
+      swap_perf_throttle_us += t_throttle - t_flush_drawable;
+      swap_perf_update_us += t_update - t_throttle;
+      swap_perf_framecb_us += t_framecb - t_update;
+      swap_perf_buffer_us += t_buffer - t_framecb;
+      swap_perf_attach_us += t_attach - t_buffer;
+      swap_perf_damage_us += t_damage - t_attach;
+      swap_perf_blit_us += t_blit - t_damage;
+      swap_perf_feedback_us += t_feedback - t_blit;
+      swap_perf_commit_us += t_commit - t_feedback;
+      swap_perf_sync_us += t_sync - t_commit;
+      swap_perf_wlflush_us += t_wlflush - t_sync;
+      swap_perf_total_us += t_wlflush - t0;
+      if (swap_perf_frames >= 60 && xv6_mesa_perf_log_enabled()) {
+         fprintf(stderr,
+                 "xv6-mesa: wl-swap avg_us total=%lld flush_drawable=%lld throttle=%lld update=%lld framecb=%lld buffer=%lld attach=%lld damage=%lld blit=%lld feedback=%lld commit=%lld sync=%lld wlflush=%lld frames=%u swap_interval=%d throttle_disabled=%d\n",
+                 (long long)(swap_perf_total_us / swap_perf_frames),
+                 (long long)(swap_perf_flush_drawable_us / swap_perf_frames),
+                 (long long)(swap_perf_throttle_us / swap_perf_frames),
+                 (long long)(swap_perf_update_us / swap_perf_frames),
+                 (long long)(swap_perf_framecb_us / swap_perf_frames),
+                 (long long)(swap_perf_buffer_us / swap_perf_frames),
+                 (long long)(swap_perf_attach_us / swap_perf_frames),
+                 (long long)(swap_perf_damage_us / swap_perf_frames),
+                 (long long)(swap_perf_blit_us / swap_perf_frames),
+                 (long long)(swap_perf_feedback_us / swap_perf_frames),
+                 (long long)(swap_perf_commit_us / swap_perf_frames),
+                 (long long)(swap_perf_sync_us / swap_perf_frames),
+                 (long long)(swap_perf_wlflush_us / swap_perf_frames),
+                 swap_perf_frames, draw->SwapInterval,
+                 xv6_mesa_wayland_throttle_disabled() ? 1 : 0);
+         fflush(stderr);
+         swap_perf_frames = 0;
+         swap_perf_flush_drawable_us = 0;
+         swap_perf_throttle_us = 0;
+         swap_perf_update_us = 0;
+         swap_perf_framecb_us = 0;
+         swap_perf_buffer_us = 0;
+         swap_perf_attach_us = 0;
+         swap_perf_damage_us = 0;
+         swap_perf_blit_us = 0;
+         swap_perf_feedback_us = 0;
+         swap_perf_commit_us = 0;
+         swap_perf_sync_us = 0;
+         swap_perf_wlflush_us = 0;
+         swap_perf_total_us = 0;
+      }
+   }
 
    return EGL_TRUE;
 }

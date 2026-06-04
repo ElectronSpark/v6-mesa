@@ -63,6 +63,18 @@
 
 static const struct gbm_core *core;
 
+#if DETECT_OS_XV6
+static bool
+xv6_gbm_trace_enabled(void)
+{
+   const char *env = getenv("XV6_GBM_DEBUG");
+
+   return env && env[0] && strcmp(env, "0") != 0 &&
+          strcmp(env, "no") != 0 && strcmp(env, "false") != 0 &&
+          strcmp(env, "off") != 0;
+}
+#endif
+
 static GLboolean
 dri_validate_egl_image(void *image, void *data)
 {
@@ -914,7 +926,13 @@ gbm_dri_bo_create(struct gbm_device *gbm,
 
    format = core->v0.format_canonicalize(format);
 
-   if (usage & GBM_BO_USE_WRITE || !dri->has_dmabuf_export)
+   if (usage & GBM_BO_USE_WRITE
+#if DETECT_OS_XV6
+       || (!dri->has_dmabuf_export && !(usage & GBM_BO_USE_RENDERING))
+#else
+       || !dri->has_dmabuf_export
+#endif
+       )
       return create_dumb(gbm, width, height, format, usage);
 
    bo = calloc(1, sizeof *bo);
@@ -1032,8 +1050,16 @@ gbm_dri_bo_create(struct gbm_device *gbm,
                                        mods_filtered ? mods_filtered : modifiers,
                                        mods_filtered ? count_filtered : count,
                                        bo);
-   if (bo->image == NULL)
+   if (bo->image == NULL) {
+#if DETECT_OS_XV6
+      if (xv6_gbm_trace_enabled())
+         fprintf(stderr,
+                 "xv6-mesa: gbm_dri_bo_create image failed %ux%u fmt=0x%x usage=0x%x has_export=%d\n",
+                 width, height, format, usage,
+                 dri->has_dmabuf_export ? 1 : 0);
+#endif
       goto failed;
+   }
 
    free(mods_filtered);
    mods_filtered = NULL;
@@ -1042,6 +1068,13 @@ gbm_dri_bo_create(struct gbm_device *gbm,
                           &bo->base.v0.handle.s32);
    dri2_query_image(bo->image, __DRI_IMAGE_ATTRIB_STRIDE,
                           (int *) &bo->base.v0.stride);
+#if DETECT_OS_XV6
+   if (xv6_gbm_trace_enabled())
+      fprintf(stderr,
+              "xv6-mesa: gbm_dri_bo_create image bo handle=%d stride=%u %ux%u fmt=0x%x usage=0x%x has_export=%d\n",
+              bo->base.v0.handle.s32, bo->base.v0.stride, width, height,
+              format, usage, dri->has_dmabuf_export ? 1 : 0);
+#endif
 
    return &bo->base;
 

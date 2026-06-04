@@ -84,6 +84,10 @@
 static void
 xv6_mesa_log(const char *msg)
 {
+   const char *trace = getenv("XV6_MESA_TRACE_LOG");
+
+   if (!trace || strcmp(trace, "0") == 0 || strcmp(trace, "false") == 0)
+      return;
    fprintf(stderr, "xv6-mesa: %s\n", msg);
    fflush(stderr);
 }
@@ -843,8 +847,20 @@ dri2_setup_device(_EGLDisplay *disp, EGLBoolean software)
    if (render_fd >= 0 && render_fd != dri2_dpy->fd_render_gpu)
       close(render_fd);
 
-   if (!dev)
+   if (!dev) {
+      char *driver_name = render_fd >= 0 ? loader_get_driver_for_fd(render_fd) : NULL;
+      bool xv6_virtio =
+         driver_name && strcmp(driver_name, "virtio_gpu") == 0;
+
+      free(driver_name);
+      if (xv6_virtio) {
+         _eglLog(_EGL_WARNING,
+                 "xv6: continuing DRM EGL init for virtio_gpu without EGLDevice metadata");
+         disp->Device = NULL;
+         return EGL_TRUE;
+      }
       return EGL_FALSE;
+   }
 
    disp->Device = dev;
    return EGL_TRUE;
