@@ -331,6 +331,7 @@ struct dri2_egl_surface {
    struct wl_display *wl_dpy_wrapper;
    struct wl_drm *wl_drm_wrapper;
    struct wl_callback *throttle_callback;
+   struct wl_callback *pending_throttle_callback;
    struct zwp_linux_dmabuf_feedback_v1 *wl_dmabuf_feedback;
    struct dmabuf_feedback dmabuf_feedback, pending_dmabuf_feedback;
    struct loader_wayland_presentation wayland_presentation;

@@ -100,6 +100,17 @@ xv6_mesa_wayland_throttle_disabled(void)
    return false;
 }
 
+static bool
+xv6_mesa_wayland_post_commit_throttle_enabled(void)
+{
+   const char *env = getenv("XV6_MESA_WAYLAND_POST_COMMIT_THROTTLE");
+
+   if (!env || !env[0])
+      return false;
+   return strcmp(env, "0") != 0 && strcmp(env, "false") != 0 &&
+          strcmp(env, "no") != 0 && strcmp(env, "off") != 0;
+}
+
 static unsigned
 xv6_mesa_wayland_present_interval(void)
 {
@@ -140,13 +151,17 @@ xv6_mesa_wayland_color_buffer_limit(unsigned fallback)
    const char *env = getenv("XV6_MESA_WAYLAND_COLOR_BUFFERS");
    char *end = NULL;
    unsigned long value;
+   unsigned default_limit = 4;
+
+   if (default_limit > fallback)
+      default_limit = fallback;
 
    if (!env || !env[0])
-      return fallback;
+      return default_limit;
 
    value = strtoul(env, &end, 0);
    if (end == env || value == 0)
-      return fallback;
+      return default_limit;
    if (value > fallback)
       return fallback;
    return (unsigned)value;
@@ -1264,6 +1279,8 @@ dri2_wl_destroy_surface(_EGLDisplay *disp, _EGLSurface *surf)
 
    if (dri2_surf->throttle_callback)
       wl_callback_destroy(dri2_surf->throttle_callback);
+   if (dri2_surf->pending_throttle_callback)
+      wl_callback_destroy(dri2_surf->pending_throttle_callback);
 
    if (dri2_surf->wl_win) {
       dri2_surf->wl_win->driver_private = NULL;
@@ -1957,7 +1974,10 @@ wayland_throttle_callback(void *data, struct wl_callback *callback,
 {
    struct dri2_egl_surface *dri2_surf = data;
 
-   dri2_surf->throttle_callback = NULL;
+   if (dri2_surf->throttle_callback == callback)
+      dri2_surf->throttle_callback = NULL;
+   if (dri2_surf->pending_throttle_callback == callback)
+      dri2_surf->pending_throttle_callback = NULL;
    wl_callback_destroy(callback);
 }
 
@@ -2131,13 +2151,14 @@ try_damage_buffer(struct dri2_egl_surface *dri2_surf, const EGLint *rects,
 }
 
 static int
-throttle(struct dri2_egl_display *dri2_dpy,
-         struct dri2_egl_surface *dri2_surf)
+throttle_callback_wait(struct dri2_egl_display *dri2_dpy,
+                       struct dri2_egl_surface *dri2_surf,
+                       struct wl_callback **callback_slot)
 {
    MESA_TRACE_FUNC();
    static unsigned throttle_logs;
 
-   while (dri2_surf->throttle_callback != NULL) {
+   while (callback_slot && *callback_slot != NULL) {
       if (throttle_logs++ < 8)
          xv6_mesa_log("wl throttle waiting");
       if (loader_wayland_dispatch(dri2_dpy->wl_dpy, dri2_surf->wl_queue, NULL) ==
@@ -2146,6 +2167,14 @@ throttle(struct dri2_egl_display *dri2_dpy,
    }
 
    return 0;
+}
+
+static int
+throttle(struct dri2_egl_display *dri2_dpy,
+         struct dri2_egl_surface *dri2_surf)
+{
+   return throttle_callback_wait(dri2_dpy, dri2_surf,
+                                 &dri2_surf->throttle_callback);
 }
 
 /**
@@ -2215,8 +2244,16 @@ dri2_wl_swap_buffers_with_damage(_EGLDisplay *disp, _EGLSurface *draw,
       t_flush_drawable = xv6_mesa_now_us();
 
    if (!xv6_mesa_wayland_throttle_disabled() &&
-       dri2_surf->throttle_callback && throttle(dri2_dpy, dri2_surf) == -1)
+       dri2_surf->throttle_callback &&
+       xv6_mesa_wayland_post_commit_throttle_enabled() &&
+       dri2_surf->pending_throttle_callback == NULL) {
+      dri2_surf->pending_throttle_callback = dri2_surf->throttle_callback;
+      dri2_surf->throttle_callback = NULL;
+   } else if (!xv6_mesa_wayland_throttle_disabled() &&
+              dri2_surf->throttle_callback &&
+              throttle(dri2_dpy, dri2_surf) == -1) {
       return -1;
+   }
    if (perf)
       t_throttle = xv6_mesa_now_us();
 
@@ -2320,7 +2357,8 @@ dri2_wl_swap_buffers_with_damage(_EGLDisplay *disp, _EGLSurface *draw,
     * handle the commit and send a release event before checking for a free
     * buffer */
    if (!xv6_mesa_wayland_throttle_disabled() &&
-       dri2_surf->throttle_callback == NULL) {
+       dri2_surf->throttle_callback == NULL &&
+       dri2_surf->pending_throttle_callback == NULL) {
       dri2_surf->throttle_callback = wl_display_sync(dri2_surf->wl_dpy_wrapper);
       wl_callback_add_listener(dri2_surf->throttle_callback, &throttle_listener,
                                dri2_surf);
@@ -2329,6 +2367,12 @@ dri2_wl_swap_buffers_with_damage(_EGLDisplay *disp, _EGLSurface *draw,
       t_sync = xv6_mesa_now_us();
 
    wl_display_flush(dri2_dpy->wl_dpy);
+   if (!xv6_mesa_wayland_throttle_disabled() &&
+       xv6_mesa_wayland_post_commit_throttle_enabled() &&
+       dri2_surf->pending_throttle_callback &&
+       throttle_callback_wait(dri2_dpy, dri2_surf,
+                              &dri2_surf->pending_throttle_callback) == -1)
+      return -1;
    if (perf)
       t_wlflush = xv6_mesa_now_us();
    if (swap_logs <= 8)

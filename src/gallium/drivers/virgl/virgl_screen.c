@@ -469,6 +469,8 @@ virgl_init_screen_caps(struct virgl_screen *vscreen)
    caps->texture_shadow_lod =
       vscreen->caps.caps.v2.capability_bits_v2 & VIRGL_CAP_V2_TEXTURE_SHADOW_LOD;
    caps->native_fence_fd = vscreen->vws->supports_fences;
+   caps->device_reset_status_query =
+      vscreen->vws->get_context_reset_status != NULL;
    caps->dest_surface_srgb_control =
       (vscreen->caps.caps.v2.capability_bits & VIRGL_CAP_SRGB_WRITE_CONTROL) ||
       (vscreen->caps.caps.v2.host_feature_check_version < 1);

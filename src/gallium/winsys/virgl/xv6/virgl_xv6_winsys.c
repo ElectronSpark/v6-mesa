@@ -44,6 +44,7 @@
 #define FB_GPU_VIRGL_RESOURCE_ATTACH 0x4634
 #define FB_GPU_VIRGL_FENCE_WAIT 0x1
 #define FB_GPU_VIRGL_SUBMIT_ASYNC 0x1
+#define FB_GPU_VIRGL_SUBMIT_FORCE_FAIL 0x80000000u
 
 struct fb_gpu_virgl_ctx {
    uint32_t ctx_id;
@@ -221,6 +222,11 @@ struct virgl_xv6_winsys {
    struct virgl_winsys base;
    int fd;
    uint32_t ctx_id;
+   bool context_lost;
+   bool sync_submit;
+   bool force_loss_triggered;
+   uint64_t force_loss_after_seconds;
+   uint64_t force_loss_start_nsec;
    mtx_t mutex;
 };
 
@@ -263,6 +269,15 @@ virgl_xv6_debug_enabled(void)
 {
    const char *env = getenv("XV6_VIRGL_DEBUG");
    return env && env[0] && strcmp(env, "0") != 0;
+}
+
+static bool
+virgl_xv6_env_enabled(const char *name)
+{
+   const char *env = getenv(name);
+
+   return env && env[0] && strcmp(env, "0") != 0 &&
+          strcmp(env, "false") != 0 && strcmp(env, "no") != 0;
 }
 
 static bool
@@ -415,6 +430,89 @@ virgl_xv6_native_fences_enabled(void)
    return env && env[0] && strcmp(env, "0") != 0;
 }
 
+static void
+virgl_xv6_mark_context_lost(struct virgl_xv6_winsys *xws, const char *reason,
+                            int err)
+{
+   bool first;
+
+   mtx_lock(&xws->mutex);
+   first = !xws->context_lost;
+   xws->context_lost = true;
+   mtx_unlock(&xws->mutex);
+
+   if (first)
+      fprintf(stderr, "virgl-xv6: context %u lost after %s errno=%d\n",
+              xws->ctx_id, reason ? reason : "gpu error", err);
+}
+
+static bool
+virgl_xv6_context_lost(struct virgl_xv6_winsys *xws)
+{
+   bool lost;
+
+   mtx_lock(&xws->mutex);
+   lost = xws->context_lost;
+   mtx_unlock(&xws->mutex);
+   return lost;
+}
+
+static uint64_t
+virgl_xv6_env_u64(const char *name)
+{
+   const char *env = getenv(name);
+   char *end = NULL;
+   unsigned long long value;
+
+   if (!env || !env[0] || strcmp(env, "0") == 0)
+      return 0;
+   errno = 0;
+   value = strtoull(env, &end, 10);
+   if (errno != 0 || end == env)
+      return 0;
+   return (uint64_t)value;
+}
+
+static uint64_t
+virgl_xv6_now_nsec(void)
+{
+   struct timespec ts;
+
+   if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+      return 0;
+   return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static bool
+virgl_xv6_should_force_context_loss(struct virgl_xv6_winsys *xws)
+{
+   bool force = false;
+   uint64_t elapsed_seconds = 0;
+   uint64_t now = 0;
+
+   mtx_lock(&xws->mutex);
+   if (xws->force_loss_after_seconds != 0 && !xws->force_loss_triggered) {
+      now = virgl_xv6_now_nsec();
+      if (now != 0) {
+         if (xws->force_loss_start_nsec == 0)
+            xws->force_loss_start_nsec = now;
+         elapsed_seconds =
+            (now - xws->force_loss_start_nsec) / 1000000000ull;
+         if (elapsed_seconds >= xws->force_loss_after_seconds) {
+            xws->force_loss_triggered = true;
+            force = true;
+         }
+      }
+   }
+   mtx_unlock(&xws->mutex);
+
+   if (force)
+      fprintf(stderr,
+              "virgl-xv6: forcing context %u loss after %lu seconds\n",
+              xws->ctx_id, (unsigned long)elapsed_seconds);
+   return force;
+}
+
 static int
 virgl_xv6_dupfd_cloexec(int fd)
 {
@@ -525,10 +623,13 @@ virgl_xv6_resource_create(struct virgl_winsys *vws,
                           uint32_t flags, uint32_t size)
 {
    struct virgl_xv6_winsys *xws = virgl_xv6_winsys(vws);
-   struct virgl_hw_res *res = CALLOC_STRUCT(virgl_hw_res);
+   struct virgl_hw_res *res;
    struct fb_gpu_virgl_resource_create create;
 
    (void)map_front_private;
+   if (virgl_xv6_context_lost(xws))
+      return NULL;
+   res = CALLOC_STRUCT(virgl_hw_res);
    if (!res)
       return NULL;
 
@@ -548,10 +649,13 @@ virgl_xv6_resource_create(struct virgl_winsys *vws,
 
    if (ioctl(xws->fd, FB_GPU_VIRGL_RESOURCE_CREATE, &create) < 0 ||
        create.resource_id == 0 || create.addr == 0 || create.size == 0) {
+      int saved_errno = errno;
       if (virgl_xv6_debug_enabled())
          fprintf(stderr,
                  "virgl-xv6: resource create failed target=%u format=%u bind=0x%x %ux%u size=%u\n",
                  target, format, bind, width, height, size);
+      if (saved_errno == EIO)
+         virgl_xv6_mark_context_lost(xws, "resource create", saved_errno);
       FREE(res);
       return NULL;
    }
@@ -593,6 +697,8 @@ virgl_xv6_resource_create_from_handle(struct virgl_winsys *vws,
 
    if (!whandle || !templ || whandle->type != WINSYS_HANDLE_TYPE_FD ||
        whandle->plane >= 4)
+      return NULL;
+   if (virgl_xv6_context_lost(xws))
       return NULL;
 
    memset(&import_fd, 0, sizeof(import_fd));
@@ -676,6 +782,7 @@ virgl_xv6_resource_create_from_handle(struct virgl_winsys *vws,
       attach.resource_id = res->res_handle;
       attach.handle = res->bo_handle;
       if (ioctl(xws->fd, FB_GPU_VIRGL_RESOURCE_ATTACH, &attach) < 0) {
+         int saved_errno = errno;
          static int attach_fail_logs;
          struct fb_gpu_bo_destroy destroy = {
             .handle = import_fd.handle,
@@ -684,9 +791,13 @@ virgl_xv6_resource_create_from_handle(struct virgl_winsys *vws,
          if (attach_fail_logs < 12) {
             fprintf(stderr,
                     "virgl-xv6: import attach failed ctx=%u resource=%u bo=%u errno=%d\n",
-                    xws->ctx_id, res->res_handle, res->bo_handle, errno);
+                    xws->ctx_id, res->res_handle, res->bo_handle,
+                    saved_errno);
             attach_fail_logs++;
          }
+         if (saved_errno == EIO)
+            virgl_xv6_mark_context_lost(xws, "resource attach",
+                                        saved_errno);
          munmap((void *)(uintptr_t)import_fd.addr, (size_t)import_fd.size);
          ioctl(xws->fd, FB_GPU_BO_DESTROY, &destroy);
          FREE(res);
@@ -741,6 +852,9 @@ virgl_xv6_transfer(struct virgl_winsys *vws, struct virgl_hw_res *res,
    int64_t t0 = virgl_xv6_perf_enabled() ? virgl_xv6_now_us() : 0;
    int ret;
 
+   if (virgl_xv6_context_lost(xws))
+      return -EIO;
+
    memset(&transfer, 0, sizeof(transfer));
    transfer.resource_id = res->res_handle;
    transfer.x = box->x;
@@ -757,6 +871,9 @@ virgl_xv6_transfer(struct virgl_winsys *vws, struct virgl_hw_res *res,
    ret = ioctl(xws->fd, from_host ? FB_GPU_VIRGL_TRANSFER_FROM_HOST :
                                     FB_GPU_VIRGL_TRANSFER_TO_HOST,
                &transfer);
+   if (ret != 0 && errno == EIO)
+      virgl_xv6_mark_context_lost(xws, from_host ? "transfer from host" :
+                                  "transfer to host", errno);
    if (t0 > 0)
       virgl_xv6_perf_note_transfer(virgl_xv6_now_us() - t0, from_host,
                                    ret, box->width, box->height);
@@ -929,6 +1046,12 @@ virgl_xv6_submit_cmd(struct virgl_winsys *vws, struct virgl_cmd_buf *_cbuf,
    if (cbuf->base.cdw == 0)
       return 0;
 
+   if (virgl_xv6_context_lost(xws)) {
+      virgl_xv6_release_all_res(xws, cbuf);
+      cbuf->base.cdw = 0;
+      return -EIO;
+   }
+
    if (cbuf->cres != 0) {
       resource_ids = CALLOC(cbuf->cres, sizeof(*resource_ids));
       if (resource_ids) {
@@ -941,7 +1064,9 @@ virgl_xv6_submit_cmd(struct virgl_winsys *vws, struct virgl_cmd_buf *_cbuf,
 
    memset(&submit, 0, sizeof(submit));
    submit.ctx_id = xws->ctx_id;
-   submit.flags = FB_GPU_VIRGL_SUBMIT_ASYNC;
+   submit.flags = xws->sync_submit ? 0 : FB_GPU_VIRGL_SUBMIT_ASYNC;
+   if (virgl_xv6_should_force_context_loss(xws))
+      submit.flags |= FB_GPU_VIRGL_SUBMIT_FORCE_FAIL;
    submit.cmd = (uint64_t)(uintptr_t)cbuf->base.buf;
    submit.cmd_size = cbuf->base.cdw * sizeof(uint32_t);
    if (resource_ids && resource_count != 0) {
@@ -950,14 +1075,17 @@ virgl_xv6_submit_cmd(struct virgl_winsys *vws, struct virgl_cmd_buf *_cbuf,
    }
 
    ret = ioctl(xws->fd, FB_GPU_VIRGL_SUBMIT, &submit);
+   if (ret != 0)
+      virgl_xv6_mark_context_lost(xws, "submit", errno);
    if (t0 > 0)
       virgl_xv6_perf_note_submit(virgl_xv6_now_us() - t0,
                                  submit.cmd_size, resource_count, ret);
    FREE(resource_ids);
    if (virgl_xv6_debug_enabled())
-      fprintf(stderr, "virgl-xv6: submit cdw=%u bytes=%u ret=%d fence=%lu signaled=%lu\n",
-              cbuf->base.cdw, submit.cmd_size, ret,
-              (unsigned long)submit.fence, (unsigned long)submit.signaled);
+      fprintf(stderr, "virgl-xv6: submit cdw=%u bytes=%u sync=%d ret=%d fence=%lu signaled=%lu\n",
+              cbuf->base.cdw, submit.cmd_size, xws->sync_submit ? 1 : 0,
+              ret, (unsigned long)submit.fence,
+              (unsigned long)submit.signaled);
    if (fence && ret == 0) {
       int fd = vws->supports_fences ?
          virgl_xv6_export_fence_fd(xws, submit.fence) : -1;
@@ -1022,6 +1150,8 @@ virgl_xv6_fence_wait(struct virgl_winsys *vws,
    bool ok;
 
    (void)timeout;
+   if (virgl_xv6_context_lost(xws))
+      return false;
    if (xfence->fd >= 0) {
       if (!virgl_xv6_wait_fd(xfence->fd, timeout)) {
          if (t0 > 0)
@@ -1058,6 +1188,8 @@ virgl_xv6_fence_wait(struct virgl_winsys *vws,
    req.wait_for = xfence->fence_id;
    ok = ioctl(xws->fd, FB_GPU_VIRGL_FENCE, &req) == 0 &&
         req.signaled >= xfence->fence_id;
+   if (!ok && errno == EIO)
+      virgl_xv6_mark_context_lost(xws, "fence wait", errno);
    if (t0 > 0)
       virgl_xv6_perf_note_wait(virgl_xv6_now_us() - t0, false, ok,
                                timeout);
@@ -1170,6 +1302,8 @@ virgl_xv6_resource_get_handle(struct virgl_winsys *vws,
 
    if (!res || !whandle)
       return false;
+   if (virgl_xv6_context_lost(xws))
+      return false;
 
    if (whandle->type == WINSYS_HANDLE_TYPE_KMS ||
        whandle->type == WINSYS_HANDLE_TYPE_SHARED) {
@@ -1199,6 +1333,15 @@ virgl_xv6_resource_get_handle(struct virgl_winsys *vws,
               res->res_handle, whandle->type, whandle->handle, stride,
               (unsigned long)whandle->size);
    return true;
+}
+
+static enum pipe_reset_status
+virgl_xv6_get_context_reset_status(struct virgl_winsys *vws)
+{
+   struct virgl_xv6_winsys *xws = virgl_xv6_winsys(vws);
+
+   return virgl_xv6_context_lost(xws) ? PIPE_GUILTY_CONTEXT_RESET :
+                                        PIPE_NO_RESET;
 }
 
 static void
@@ -1295,6 +1438,17 @@ virgl_xv6_winsys_create_for_fd(int fd)
    if (ioctl(xws->fd, FB_GPU_VIRGL_CTX_CREATE, &ctx) < 0 || ctx.ctx_id == 0)
       goto fail;
    xws->ctx_id = ctx.ctx_id;
+   xws->sync_submit = virgl_xv6_env_enabled("XV6_VIRGL_SYNC_SUBMIT");
+   if (xws->sync_submit)
+      fprintf(stderr, "virgl-xv6: context %u using synchronous submit\n",
+              xws->ctx_id);
+   xws->force_loss_after_seconds =
+      virgl_xv6_env_u64("XV6_VIRGL_FORCE_CONTEXT_LOSS_AFTER_SECONDS");
+   xws->force_loss_start_nsec = virgl_xv6_now_nsec();
+   if (xws->force_loss_after_seconds != 0)
+      fprintf(stderr,
+              "virgl-xv6: context %u will force loss after %lu seconds\n",
+              xws->ctx_id, (unsigned long)xws->force_loss_after_seconds);
 
    (void)mtx_init(&xws->mutex, mtx_plain);
 
@@ -1323,6 +1477,11 @@ virgl_xv6_winsys_create_for_fd(int fd)
    xws->base.fence_reference = virgl_xv6_fence_reference;
    xws->base.fence_server_sync = virgl_xv6_fence_server_sync;
    xws->base.fence_get_fd = virgl_xv6_fence_get_fd;
+   /*
+    * Keep context loss fail-closed inside the winsys.  The staged WebKitGTK
+    * runtime crashes in its Skia worker cleanup when Mesa advertises graphics
+    * reset status for this path, so do not expose the query hook here.
+    */
    xws->base.supports_fences = virgl_xv6_native_fences_enabled();
    xws->base.supports_encoded_transfers = 0;
    xws->base.supports_coherent = 1;

@@ -110,6 +110,8 @@ struct virgl_context {
 
    struct primconvert_context *primconvert;
    uint32_t hw_sub_ctx_id;
+   enum pipe_reset_status reset_status;
+   struct pipe_device_reset_callback reset;
 
    /* The total size of staging resources used in queued copy transfers. */
    uint64_t queued_staging_res_size;

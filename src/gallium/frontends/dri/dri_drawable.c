@@ -84,6 +84,14 @@ dri_st_framebuffer_validate(struct st_context *st,
                statt_mask |= (1 << i);
          }
 
+         for (i = 0; i < count; i++) {
+            if (!textures[statts[i]]) {
+               drawable->texture_stamp = lastStamp;
+               drawable->texture_mask = 0;
+               return false;
+            }
+         }
+
          drawable->texture_stamp = lastStamp;
          drawable->texture_mask = statt_mask;
       }

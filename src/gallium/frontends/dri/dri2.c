@@ -268,7 +268,10 @@ dri2_allocate_textures(struct dri_context *ctx,
    if (images.image_mask & __DRI_IMAGE_BUFFER_FRONT) {
       struct pipe_resource **buf =
          &drawable->textures[ST_ATTACHMENT_FRONT_LEFT];
-      struct pipe_resource *texture = images.front->texture;
+      struct pipe_resource *texture = images.front ? images.front->texture : NULL;
+
+      if (!texture)
+         return;
 
       drawable->w = texture->width0;
       drawable->h = texture->height0;
@@ -280,7 +283,10 @@ dri2_allocate_textures(struct dri_context *ctx,
    if (images.image_mask & __DRI_IMAGE_BUFFER_BACK) {
       struct pipe_resource **buf =
          &drawable->textures[ST_ATTACHMENT_BACK_LEFT];
-      struct pipe_resource *texture = images.back->texture;
+      struct pipe_resource *texture = images.back ? images.back->texture : NULL;
+
+      if (!texture)
+         return;
 
       drawable->w = texture->width0;
       drawable->h = texture->height0;
@@ -292,7 +298,10 @@ dri2_allocate_textures(struct dri_context *ctx,
    if (images.image_mask & __DRI_IMAGE_BUFFER_SHARED) {
       struct pipe_resource **buf =
          &drawable->textures[ST_ATTACHMENT_BACK_LEFT];
-      struct pipe_resource *texture = images.back->texture;
+      struct pipe_resource *texture = images.back ? images.back->texture : NULL;
+
+      if (!texture)
+         return;
 
       drawable->w = texture->width0;
       drawable->h = texture->height0;
@@ -1044,11 +1053,18 @@ dri_create_image(struct dri_screen *screen,
 static bool
 dri2_query_image_common(struct dri_image *image, int attrib, int *value)
 {
+   if (!image)
+      return false;
+
    switch (attrib) {
    case __DRI_IMAGE_ATTRIB_WIDTH:
+      if (!image->texture)
+         return false;
       *value = image->texture->width0;
       return true;
    case __DRI_IMAGE_ATTRIB_HEIGHT:
+      if (!image->texture)
+         return false;
       *value = image->texture->height0;
       return true;
    case __DRI_IMAGE_ATTRIB_FOURCC:
@@ -1079,6 +1095,9 @@ dri2_query_image_common(struct dri_image *image, int attrib, int *value)
 static bool
 dri2_query_image_by_resource_handle(struct dri_image *image, int attrib, int *value)
 {
+   if (!image || !image->texture)
+      return false;
+
    struct pipe_screen *pscreen = image->texture->screen;
    struct winsys_handle whandle;
    struct pipe_resource *tex;
@@ -1163,6 +1182,9 @@ static bool
 dri2_resource_get_param(struct dri_image *image, enum pipe_resource_param param,
                         unsigned handle_usage, uint64_t *value)
 {
+   if (!image || !image->texture)
+      return false;
+
    struct pipe_screen *pscreen = image->texture->screen;
    if (!pscreen->resource_get_param)
       return false;
@@ -1181,6 +1203,9 @@ dri2_query_image_by_resource_param(struct dri_image *image, int attrib, int *val
    enum pipe_resource_param param;
    uint64_t res_param;
    unsigned handle_usage;
+
+   if (!image || !image->texture)
+      return false;
 
    if (!image->texture->screen->resource_get_param)
       return false;
