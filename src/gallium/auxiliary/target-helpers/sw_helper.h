@@ -31,8 +31,12 @@
 
 #ifdef GALLIUM_VIRGL
 #include "virgl/virgl_public.h"
-#include "virgl/xv6/virgl_xv6_public.h"
+#include "virgl/drm/virgl_drm_public.h"
 #include "virgl/vtest/virgl_vtest_public.h"
+#if DETECT_OS_XV6
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 #endif
 
 static inline struct pipe_screen *
@@ -48,11 +52,16 @@ sw_screen_create_named(struct sw_winsys *winsys, const struct pipe_screen_config
 #if defined(GALLIUM_VIRGL)
    if (screen == NULL &&
        (strcmp(driver, "virgl") == 0 || strcmp(driver, "virpipe") == 0)) {
-      struct virgl_winsys *vws;
-      vws = virgl_xv6_winsys_create();
-      if (!vws)
-         vws = virgl_vtest_winsys_wrap(winsys);
+#if DETECT_OS_XV6
+      int fd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
+      if (fd >= 0) {
+         screen = virgl_drm_screen_create(fd, config);
+         close(fd);
+      }
+#else
+      struct virgl_winsys *vws = virgl_vtest_winsys_wrap(winsys);
       screen = virgl_create_screen(vws, NULL);
+#endif
    }
 #endif
 

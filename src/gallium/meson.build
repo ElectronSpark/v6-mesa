@@ -171,7 +171,6 @@ endif
 if with_gallium_virgl
   subdir('winsys/virgl/common')
   if not with_platform_windows
-    subdir('winsys/virgl/xv6')
     subdir('winsys/virgl/drm')
     subdir('winsys/virgl/vtest')
   endif

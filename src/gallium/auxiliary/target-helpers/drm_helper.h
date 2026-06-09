@@ -260,32 +260,11 @@ DRM_DRIVER_DESCRIPTOR_STUB(kgsl)
 #if defined(GALLIUM_VIRGL)
 #include "virgl/drm/virgl_drm_public.h"
 #include "virgl/virgl_public.h"
-#include "virgl/xv6/virgl_xv6_public.h"
 
 static struct pipe_screen *
 pipe_virtio_gpu_create_screen(int fd, const struct pipe_screen_config *config)
 {
-   struct pipe_screen *screen = NULL;
-
-#if DETECT_OS_XV6
-   fprintf(stderr, "xv6-mesa: virtio_gpu create_screen fd=%d try xv6 winsys\n",
-           fd);
-   struct virgl_winsys *vws = virgl_xv6_winsys_create_for_fd(fd);
-   if (vws) {
-      fprintf(stderr, "xv6-mesa: virtio_gpu xv6 winsys ok\n");
-      screen = virgl_create_screen(vws, config);
-      fprintf(stderr, "xv6-mesa: virtio_gpu xv6 screen=%p\n", (void *)screen);
-   } else {
-      fprintf(stderr, "xv6-mesa: virtio_gpu xv6 winsys failed\n");
-   }
-#endif
-
-   if (!screen) {
-#if DETECT_OS_XV6
-      fprintf(stderr, "xv6-mesa: virtio_gpu fallback drm screen\n");
-#endif
-      screen = virgl_drm_screen_create(fd, config);
-   }
+   struct pipe_screen *screen = virgl_drm_screen_create(fd, config);
 
    return screen ? debug_screen_wrap(screen) : NULL;
 }

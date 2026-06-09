@@ -26,7 +26,6 @@ libvirgl = static_library(
 
 virgl_deps = [libvirgl]
 if not with_platform_windows
-  virgl_deps += libvirglxv6
   virgl_deps += libvirgldrm
   virgl_deps += libvirglvtest
 endif
