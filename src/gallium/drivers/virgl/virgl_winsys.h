@@ -146,8 +146,6 @@ struct virgl_winsys {
 
    int (*fence_get_fd)(struct virgl_winsys *vws,
                        struct pipe_fence_handle *fence);
-
-   enum pipe_reset_status (*get_context_reset_status)(struct virgl_winsys *vws);
 };
 
 /* this defaults all newer caps,

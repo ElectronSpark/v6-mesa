@@ -40,9 +40,6 @@
 # include <errno.h>
 # include <sys/mman.h>
 #endif
-#include <stdlib.h>
-#include <string.h>
-#include <time.h>
 
 #include "pipe/p_state.h"
 #include "util/u_inlines.h"
@@ -80,25 +77,6 @@ struct dri_sw_winsys
 
    const struct drisw_loader_funcs *lf;
 };
-
-static int64_t
-xv6_dri_sw_now_us(void)
-{
-   struct timespec ts;
-
-   if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
-      return 0;
-   return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
-}
-
-static bool
-xv6_dri_sw_perf_log_enabled(void)
-{
-   const char *perf = getenv("XV6_MESA_PERF_LOG");
-
-   return perf && perf[0] && strcmp(perf, "0") != 0 &&
-          strcmp(perf, "false") != 0;
-}
 
 static inline struct dri_sw_displaytarget *
 dri_sw_displaytarget( struct sw_displaytarget *dt )
@@ -375,21 +353,12 @@ dri_sw_displaytarget_display(struct sw_winsys *ws,
                              unsigned nboxes,
                              struct pipe_box *box)
 {
-   static unsigned xv6_display_frames;
-   static int64_t xv6_display_total_us;
-   static int64_t xv6_display_call_us;
-   static uint64_t xv6_display_bytes;
    struct dri_sw_winsys *dri_sw_ws = dri_sw_winsys(ws);
    struct dri_sw_displaytarget *dri_sw_dt = dri_sw_displaytarget(dt);
    struct dri_drawable *dri_drawable = (struct dri_drawable *)context_private;
    unsigned width, height, x = 0, y = 0;
    unsigned blsize = util_format_get_blocksize(dri_sw_dt->format);
    bool is_shm = dri_sw_dt->shmid != -1;
-   bool perf = xv6_dri_sw_perf_log_enabled();
-   int64_t t0 = perf ? xv6_dri_sw_now_us() : 0;
-   int64_t t_call = t0;
-   int64_t t_end = 0;
-   uint64_t bytes = 0;
    /* Set the width to 'stride / cpp'.
     *
     * PutImage correctly clips to the width of the dst drawable.
@@ -397,15 +366,12 @@ dri_sw_displaytarget_display(struct sw_winsys *ws,
    if (!nboxes) {
       width = dri_sw_dt->stride / blsize;
       height = dri_sw_dt->height;
-      bytes = (uint64_t)width * height * blsize;
       if (is_shm)
          dri_sw_ws->lf->put_image_shm(dri_drawable, dri_sw_dt->shmid, dri_sw_dt->data, 0, 0,
                                     0, 0, width, height, dri_sw_dt->stride);
       else
          dri_sw_ws->lf->put_image(dri_drawable, dri_sw_dt->data, width, height);
-      if (perf)
-         t_call = xv6_dri_sw_now_us();
-      goto out;
+      return;
    }
    for (unsigned i = 0; i < nboxes; i++) {
       unsigned offset = dri_sw_dt->stride * box[i].y;
@@ -415,7 +381,6 @@ dri_sw_displaytarget_display(struct sw_winsys *ws,
       y = box[i].y;
       width = box[i].width;
       height = box[i].height;
-      bytes += (uint64_t)width * height * blsize;
       if (is_shm) {
          /* don't add x offset for shm, the put_image_shm will deal with it */
          dri_sw_ws->lf->put_image_shm(dri_drawable, dri_sw_dt->shmid, dri_sw_dt->data, offset, offset_x,
@@ -424,31 +389,6 @@ dri_sw_displaytarget_display(struct sw_winsys *ws,
          data += offset_x;
          dri_sw_ws->lf->put_image2(dri_drawable, data,
                                    x, y, width, height, dri_sw_dt->stride);
-      }
-   }
-   if (perf)
-      t_call = xv6_dri_sw_now_us();
-
-out:
-   if (perf)
-      t_end = xv6_dri_sw_now_us();
-   if (perf && t0 > 0 && t_call >= t0 && t_end >= t_call) {
-      xv6_display_frames++;
-      xv6_display_call_us += t_call - t0;
-      xv6_display_total_us += t_end - t0;
-      xv6_display_bytes += bytes;
-      if (xv6_display_frames >= 20) {
-         fprintf(stderr,
-                 "xv6-mesa: dri-sw-display avg_us total=%lld call=%lld bytes=%llu frames=%u\n",
-                 (long long)(xv6_display_total_us / xv6_display_frames),
-                 (long long)(xv6_display_call_us / xv6_display_frames),
-                 (unsigned long long)(xv6_display_bytes / xv6_display_frames),
-                 xv6_display_frames);
-         fflush(stderr);
-         xv6_display_frames = 0;
-         xv6_display_total_us = 0;
-         xv6_display_call_us = 0;
-         xv6_display_bytes = 0;
       }
    }
 }

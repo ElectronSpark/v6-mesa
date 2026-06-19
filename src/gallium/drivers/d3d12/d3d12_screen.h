@@ -77,7 +77,6 @@ struct d3d12_screen {
    util_dl_library *d3d12_mod;
    ID3D12Device3 *dev;
    ID3D12Device10 *dev10;
-   ID3D12Device13 *dev13;
    ID3D12Device15 *dev15;
    ID3D12CommandQueue *cmdqueue;
    bool (*init)(struct d3d12_screen *screen);

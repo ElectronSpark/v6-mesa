@@ -30,7 +30,6 @@
 
 #include "util/libdrm.h"
 #include "git_sha1.h"
-#include "util/detect_os.h"
 #include "GL/mesa_glinterop.h"
 #include "mesa_interface.h"
 #include "util/disk_cache.h"
@@ -59,8 +58,6 @@
 #include "loader_dri_helper.h"
 
 #include "drm-uapi/drm_fourcc.h"
-
-#include <stdio.h>
 
 struct dri2_buffer
 {
@@ -268,10 +265,7 @@ dri2_allocate_textures(struct dri_context *ctx,
    if (images.image_mask & __DRI_IMAGE_BUFFER_FRONT) {
       struct pipe_resource **buf =
          &drawable->textures[ST_ATTACHMENT_FRONT_LEFT];
-      struct pipe_resource *texture = images.front ? images.front->texture : NULL;
-
-      if (!texture)
-         return;
+      struct pipe_resource *texture = images.front->texture;
 
       drawable->w = texture->width0;
       drawable->h = texture->height0;
@@ -283,10 +277,7 @@ dri2_allocate_textures(struct dri_context *ctx,
    if (images.image_mask & __DRI_IMAGE_BUFFER_BACK) {
       struct pipe_resource **buf =
          &drawable->textures[ST_ATTACHMENT_BACK_LEFT];
-      struct pipe_resource *texture = images.back ? images.back->texture : NULL;
-
-      if (!texture)
-         return;
+      struct pipe_resource *texture = images.back->texture;
 
       drawable->w = texture->width0;
       drawable->h = texture->height0;
@@ -298,10 +289,7 @@ dri2_allocate_textures(struct dri_context *ctx,
    if (images.image_mask & __DRI_IMAGE_BUFFER_SHARED) {
       struct pipe_resource **buf =
          &drawable->textures[ST_ATTACHMENT_BACK_LEFT];
-      struct pipe_resource *texture = images.back ? images.back->texture : NULL;
-
-      if (!texture)
-         return;
+      struct pipe_resource *texture = images.back->texture;
 
       drawable->w = texture->width0;
       drawable->h = texture->height0;
@@ -1053,18 +1041,11 @@ dri_create_image(struct dri_screen *screen,
 static bool
 dri2_query_image_common(struct dri_image *image, int attrib, int *value)
 {
-   if (!image)
-      return false;
-
    switch (attrib) {
    case __DRI_IMAGE_ATTRIB_WIDTH:
-      if (!image->texture)
-         return false;
       *value = image->texture->width0;
       return true;
    case __DRI_IMAGE_ATTRIB_HEIGHT:
-      if (!image->texture)
-         return false;
       *value = image->texture->height0;
       return true;
    case __DRI_IMAGE_ATTRIB_FOURCC:
@@ -1095,9 +1076,6 @@ dri2_query_image_common(struct dri_image *image, int attrib, int *value)
 static bool
 dri2_query_image_by_resource_handle(struct dri_image *image, int attrib, int *value)
 {
-   if (!image || !image->texture)
-      return false;
-
    struct pipe_screen *pscreen = image->texture->screen;
    struct winsys_handle whandle;
    struct pipe_resource *tex;
@@ -1182,9 +1160,6 @@ static bool
 dri2_resource_get_param(struct dri_image *image, enum pipe_resource_param param,
                         unsigned handle_usage, uint64_t *value)
 {
-   if (!image || !image->texture)
-      return false;
-
    struct pipe_screen *pscreen = image->texture->screen;
    if (!pscreen->resource_get_param)
       return false;
@@ -1203,9 +1178,6 @@ dri2_query_image_by_resource_param(struct dri_image *image, int attrib, int *val
    enum pipe_resource_param param;
    uint64_t res_param;
    unsigned handle_usage;
-
-   if (!image || !image->texture)
-      return false;
 
    if (!image->texture->screen->resource_get_param)
       return false;
@@ -1786,28 +1758,8 @@ dri2_init_screen(struct dri_screen *screen, bool driver_name_is_inferred)
    screen->can_share_buffer = true;
 
 #ifdef HAVE_LIBDRM
-#if DETECT_OS_XV6
-   fprintf(stderr, "xv6-mesa: dri2_init_screen fd=%d inferred=%d\n",
-           screen->fd, driver_name_is_inferred);
-#endif
-   if (pipe_loader_drm_probe_fd(&screen->dev, screen->fd, false)) {
-#if DETECT_OS_XV6
-      fprintf(stderr, "xv6-mesa: dri2 probe ok dev=%p driver=%s\n",
-              (void *)screen->dev,
-              screen->dev && screen->dev->driver_name ?
-              screen->dev->driver_name : "(null)");
-#endif
+   if (pipe_loader_drm_probe_fd(&screen->dev, screen->fd, false))
       pscreen = pipe_loader_create_screen(screen->dev, driver_name_is_inferred);
-#if DETECT_OS_XV6
-      fprintf(stderr, "xv6-mesa: dri2 create_screen pscreen=%p\n",
-              (void *)pscreen);
-#endif
-   }
-#if DETECT_OS_XV6
-   else {
-      fprintf(stderr, "xv6-mesa: dri2 probe failed fd=%d\n", screen->fd);
-   }
-#endif
 #endif
 
    return pscreen;

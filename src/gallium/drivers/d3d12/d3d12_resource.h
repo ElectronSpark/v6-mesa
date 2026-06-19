@@ -25,9 +25,6 @@
 #define D3D12_RESOURCE_H
 
 struct pipe_screen;
-struct pipe_context;
-struct pipe_fence_handle;
-struct d3d12_context;
 #include "d3d12_bufmgr.h"
 #include "util/u_range.h"
 #include "util/u_transfer.h"
@@ -56,7 +53,6 @@ struct d3d12_resource {
    unsigned dt_refcount; /* For planar resources sharing the dt pointer */
    unsigned dt_stride;
    struct pipe_resource *dt_proxy;
-   struct d3d12_async_frontbuffer *async_frontbuffer;
 
    struct util_range valid_buffer_range;
    uint32_t bind_counts[MESA_SHADER_STAGES][D3D12_RESOURCE_BINDING_TYPES];
@@ -71,8 +67,6 @@ struct d3d12_memory_object {
    ID3D12Resource *res;
    ID3D12Heap *heap;
 };
-
-struct d3d12_async_frontbuffer;
 
 struct d3d12_transfer {
    struct threaded_transfer base;
@@ -133,17 +127,6 @@ d3d12_subresource_id_uses_layer(enum pipe_texture_target target)
 
 void
 d3d12_resource_release(struct d3d12_resource *res);
-
-void
-d3d12_async_frontbuffer_destroy(struct pipe_screen *pscreen,
-                                struct d3d12_async_frontbuffer *async);
-
-bool
-d3d12_transfer_image_to_buf(struct d3d12_context *ctx,
-                            struct d3d12_resource *res,
-                            struct d3d12_resource *staging_res,
-                            struct d3d12_transfer *trans,
-                            unsigned resid);
 
 void
 d3d12_resource_wait_idle(struct d3d12_context *ctx,

@@ -52,7 +52,6 @@ struct wl_event_queue;
 struct wl_callback;
 struct wl_display;
 struct wl_drm;
-struct wl_proxy;
 struct wl_registry;
 struct wl_shm;
 struct wl_surface;
@@ -280,7 +279,6 @@ struct dri2_egl_display {
    uint32_t capabilities;
 #endif
    struct wl_shm *wl_shm;
-   struct wl_proxy *xv6_gpu_manager;
    struct wl_event_queue *wl_queue;
    struct wl_fixes *wl_fixes;
    struct zwp_linux_dmabuf_v1 *wl_dmabuf;
@@ -331,7 +329,6 @@ struct dri2_egl_surface {
    struct wl_display *wl_dpy_wrapper;
    struct wl_drm *wl_drm_wrapper;
    struct wl_callback *throttle_callback;
-   struct wl_callback *pending_throttle_callback;
    struct zwp_linux_dmabuf_feedback_v1 *wl_dmabuf_feedback;
    struct dmabuf_feedback dmabuf_feedback, pending_dmabuf_feedback;
    struct loader_wayland_presentation wayland_presentation;
@@ -357,9 +354,6 @@ struct dri2_egl_surface {
       /* for swrast */
       void *data;
       int data_size;
-      int xv6_fb_fd;
-      uint32_t xv6_bo_handle;
-      bool xv6_bo_backed;
 #endif
 #ifdef HAVE_DRM_PLATFORM
       struct gbm_bo *bo;

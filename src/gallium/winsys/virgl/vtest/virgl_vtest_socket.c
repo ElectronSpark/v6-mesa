@@ -51,7 +51,6 @@ static int virgl_block_write(int fd, void *buf, int size)
    } while (left);
    return size;
 }
-
 static int virgl_block_read(int fd, void *buf, int size)
 {
    void *ptr = buf;
@@ -217,11 +216,6 @@ int virgl_vtest_connect(struct virgl_vtest_winsys *vws)
          ret = -errno;
       }
    } while (ret == -EINTR);
-
-   if (ret) {
-      close(sock);
-      return -1;
-   }
 
    vws->sock_fd = sock;
    virgl_vtest_send_init(vws);

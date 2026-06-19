@@ -29,89 +29,8 @@
 #include "util/os_time.h"
 
 #include <dxguids/dxguids.h>
-#include <stdint.h>
-#include <stdlib.h>
 
 static constexpr unsigned residency_batch_size = 128;
-static constexpr uint32_t nvidia_vendor_id = 0x10de;
-
-struct residency_bo_sort_entry {
-   struct d3d12_bo *bo;
-};
-
-static int
-compare_residency_bo_sort_entries(const void *a, const void *b)
-{
-   const struct residency_bo_sort_entry *entry_a =
-      (const struct residency_bo_sort_entry *)a;
-   const struct residency_bo_sort_entry *entry_b =
-      (const struct residency_bo_sort_entry *)b;
-
-   if (entry_a->bo->unique_id < entry_b->bo->unique_id)
-      return -1;
-   if (entry_a->bo->unique_id > entry_b->bo->unique_id)
-      return 1;
-
-   uintptr_t res_a = (uintptr_t)entry_a->bo->res;
-   uintptr_t res_b = (uintptr_t)entry_b->bo->res;
-
-   if (res_a < res_b)
-      return -1;
-   if (res_a > res_b)
-      return 1;
-   return 0;
-}
-
-static unsigned
-make_resident_batch_size_for_screen(struct d3d12_screen *screen)
-{
-   /* NVIDIA's WDDM path rejects the second-FBO count=2 make-resident packet on
-    * WSL-equivalent transports. Keep residency real, but never submit a
-    * multi-allocation array for that adapter family.
-    */
-   return screen->vendor_id == nvidia_vendor_id ? 1 : residency_batch_size;
-}
-
-static HRESULT
-d3d12_make_resident(struct d3d12_screen *screen, unsigned count,
-                    ID3D12Pageable **pageables)
-{
-   unsigned batch_size = make_resident_batch_size_for_screen(screen);
-   HRESULT hr = S_OK;
-
-   for (unsigned i = 0; i < count; i += batch_size) {
-      unsigned batch_count = MIN2(batch_size, count - i);
-
-      hr = screen->dev->MakeResident(batch_count, pageables + i);
-      if (FAILED(hr))
-         return hr;
-   }
-
-   return hr;
-}
-
-static HRESULT
-d3d12_enqueue_make_resident(struct d3d12_screen *screen, unsigned count,
-                            ID3D12Pageable **pageables,
-                            ID3D12Fence *fence,
-                            uint64_t *fence_value)
-{
-   unsigned batch_size = make_resident_batch_size_for_screen(screen);
-   HRESULT hr = S_OK;
-
-   for (unsigned i = 0; i < count; i += batch_size) {
-      unsigned batch_count = MIN2(batch_size, count - i);
-
-      hr = screen->dev->EnqueueMakeResident(D3D12_RESIDENCY_FLAG_NONE,
-                                            batch_count, pageables + i,
-                                            fence, *fence_value + 1);
-      if (FAILED(hr))
-         return hr;
-      ++(*fence_value);
-   }
-
-   return hr;
-}
 
 static void
 log_eviction_info(struct d3d12_screen *screen, struct d3d12_bo *bo)
@@ -270,26 +189,9 @@ d3d12_process_batch_residency(struct d3d12_screen *screen, struct d3d12_batch *b
       return;
    }
 
-   unsigned sorted_bo_count = base_bo_set->entries;
-   residency_bo_sort_entry *sorted_bos =
-      (residency_bo_sort_entry *)calloc(sorted_bo_count, sizeof(*sorted_bos));
-   if (!sorted_bos) {
-      _mesa_set_destroy(base_bo_set, nullptr);
-      return;
-   }
-
-   unsigned sorted_bo_index = 0;
-   struct set_entry *set_entry = nullptr;
-   while ((set_entry = _mesa_set_next_entry(base_bo_set, set_entry)) != nullptr)
-      sorted_bos[sorted_bo_index++].bo = (struct d3d12_bo *)set_entry->key;
-   assert(sorted_bo_index == sorted_bo_count);
-   qsort(sorted_bos, sorted_bo_count, sizeof(*sorted_bos),
-         compare_residency_bo_sort_entries);
-
    uint64_t residency_fence_value_snapshot = screen->residency_fence_value;
-   unsigned max_batch_count = make_resident_batch_size_for_screen(screen);
 
-   unsigned entry = 0;
+   struct set_entry *entry = _mesa_set_next_entry(base_bo_set, nullptr);
    uint64_t batch_memory_size = 0;
    unsigned batch_count = 0;
    ID3D12Pageable *to_make_resident[residency_batch_size];
@@ -306,29 +208,28 @@ d3d12_process_batch_residency(struct d3d12_screen *screen, struct d3d12_batch *b
 
       /* We've got some room, or we can't free up any more room, make some resources resident */
       HRESULT hr = S_OK;
-      if ((available_memory || !anything_to_wait_for) && batch_count < max_batch_count) {
-         for (; entry < sorted_bo_count; ++entry) {
-            struct d3d12_bo *bo = sorted_bos[entry].bo;
+      if ((available_memory || !anything_to_wait_for) && batch_count < residency_batch_size) {
+         for (; entry; entry = _mesa_set_next_entry(base_bo_set, entry)) {
+            struct d3d12_bo *bo = (struct d3d12_bo *)entry->key;
             if (anything_to_wait_for &&
                 (int64_t)(batch_memory_size + bo->estimated_size) > available_memory)
                break;
 
             batch_memory_size += bo->estimated_size;
             to_make_resident[batch_count++] = bo->res;
-            if (batch_count == max_batch_count) {
-               ++entry;
+            if (batch_count == residency_batch_size)
                break;
-            }
          }
 
-         if (batch_count)
-            hr = d3d12_enqueue_make_resident(screen, batch_count,
-                                             to_make_resident,
-                                             screen->residency_fence,
-                                             &screen->residency_fence_value);
+         if (batch_count) {
+            hr = screen->dev->EnqueueMakeResident(D3D12_RESIDENCY_FLAG_NONE, batch_count, to_make_resident,
+               screen->residency_fence, screen->residency_fence_value + 1);
+            if (SUCCEEDED(hr))
+               ++screen->residency_fence_value;
+         }
 
          if (SUCCEEDED(hr)) {
-            bool batch_full = batch_count == max_batch_count;
+            bool batch_full = batch_count == residency_batch_size;
             batch_count = 0;
             size_to_make_resident -= batch_memory_size;
             batch_memory_size = 0;
@@ -340,7 +241,7 @@ d3d12_process_batch_residency(struct d3d12_screen *screen, struct d3d12_batch *b
       /* We need to free up some space, either we broke early from the resource loop,
        * or the MakeResident call itself failed.
        */
-      if (FAILED(hr) || entry < sorted_bo_count) {
+      if (FAILED(hr) || entry) {
          if (!anything_to_wait_for) {
             assert(false);
             break;
@@ -353,7 +254,6 @@ d3d12_process_batch_residency(struct d3d12_screen *screen, struct d3d12_batch *b
       /* Made it to the end without explicitly needing to loop, so we're done */
       break;
    }
-   free(sorted_bos);
    _mesa_set_destroy(base_bo_set, nullptr);
 
    /* The GPU needs to wait for these resources to be made resident */
@@ -507,7 +407,7 @@ d3d12_promote_to_permanent_residency(
 
          if (!pResidencyFence)
          {
-            hr = d3d12_make_resident(screen, count, pageables);
+            hr = screen->dev->MakeResident(count, pageables);
             if(SUCCEEDED(hr))
             {
                debug_printf("D3D12: Promoted %u resources to permanent residency (synchronous)\n", count);
@@ -515,10 +415,11 @@ d3d12_promote_to_permanent_residency(
          }
          else
          {
-            hr = d3d12_enqueue_make_resident(screen, count, pageables,
-               pResidencyFence, pResidencyFenceValue);
+            hr = screen->dev->EnqueueMakeResident(D3D12_RESIDENCY_FLAG_NONE, count, pageables,
+               pResidencyFence, (*pResidencyFenceValue) + 1);
             if(SUCCEEDED(hr))
             {
+               (*pResidencyFenceValue)++;
                debug_printf("D3D12: Promoted %u resources to permanent residency (asynchronous) with fence object %p and fence value %" PRIu64 " and hr %x\n", count, pResidencyFence, *pResidencyFenceValue, (unsigned)hr);
             }
          }

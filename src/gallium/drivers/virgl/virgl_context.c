@@ -1083,34 +1083,6 @@ static void virgl_submit_cmd(struct virgl_winsys *vws,
    }
 }
 
-static enum pipe_reset_status
-virgl_get_device_reset_status(struct pipe_context *pctx)
-{
-   struct virgl_context *ctx = virgl_context(pctx);
-   struct virgl_screen *rs = virgl_screen(pctx->screen);
-   enum pipe_reset_status status = ctx->reset_status;
-
-   if (status == PIPE_NO_RESET && rs->vws->get_context_reset_status)
-      status = rs->vws->get_context_reset_status(rs->vws);
-
-   if (status != PIPE_NO_RESET)
-      ctx->reset_status = status;
-
-   return status;
-}
-
-static void
-virgl_set_device_reset_callback(struct pipe_context *pctx,
-                                const struct pipe_device_reset_callback *cb)
-{
-   struct virgl_context *ctx = virgl_context(pctx);
-
-   if (cb)
-      ctx->reset = *cb;
-   else
-      memset(&ctx->reset, 0, sizeof(ctx->reset));
-}
-
 void virgl_flush_eq(struct virgl_context *ctx, void *closure,
                     struct pipe_fence_handle **fence)
 {
@@ -1131,12 +1103,6 @@ void virgl_flush_eq(struct virgl_context *ctx, void *closure,
    virgl_transfer_queue_clear(&ctx->queue, ctx->cbuf);
 
    virgl_submit_cmd(rs->vws, ctx->cbuf, fence);
-   if (rs->vws->get_context_reset_status) {
-      enum pipe_reset_status status =
-         rs->vws->get_context_reset_status(rs->vws);
-      if (status != PIPE_NO_RESET)
-         ctx->reset_status = status;
-   }
 
    /* Reserve some space for transfers. */
    if (ctx->encoded_transfers)
@@ -1847,11 +1813,6 @@ struct pipe_context *virgl_context_create(struct pipe_screen *pscreen,
 
    vctx->base.create_video_codec = virgl_video_create_codec;
    vctx->base.create_video_buffer = virgl_video_create_buffer;
-   if (rs->vws->get_context_reset_status) {
-      vctx->base.get_device_reset_status = virgl_get_device_reset_status;
-      vctx->base.set_device_reset_callback = virgl_set_device_reset_callback;
-      vctx->reset_status = PIPE_NO_RESET;
-   }
 
    if (rs->caps.caps.v2.host_feature_check_version >= 7)
       vctx->base.link_shader = virgl_link_shader;

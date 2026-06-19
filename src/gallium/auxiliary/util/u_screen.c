@@ -132,7 +132,7 @@ u_init_pipe_screen_caps(struct pipe_screen *pscreen, int accel)
 
    caps->throttle = true;
 
-#if defined(HAVE_LIBDRM) && (DETECT_OS_LINUX || DETECT_OS_BSD || DETECT_OS_MANAGARM || DETECT_OS_XV6)
+#if defined(HAVE_LIBDRM) && (DETECT_OS_LINUX || DETECT_OS_BSD || DETECT_OS_MANAGARM)
    if (pscreen->get_screen_fd) {
       uint64_t cap;
       int fd = pscreen->get_screen_fd(pscreen);

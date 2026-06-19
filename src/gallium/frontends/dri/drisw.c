@@ -45,231 +45,11 @@
 
 #include "util/libsync.h"
 
-#include <inttypes.h>
-#include <limits.h>
-#include <stdlib.h>
-#include <string.h>
-#include <time.h>
-#include <unistd.h>
-
 #ifdef HAVE_LIBDRM
 #include <xf86drm.h>
 #endif
 
-bool
-xv6_drisw_drawable_backbuffer_info(void *drawable_private, void *info);
-
-bool
-xv6_drisw_drawable_backbuffer_info(void *drawable_private, void *info)
-{
-   struct dri_drawable *drawable = drawable_private;
-   const __DRIswrastLoaderExtension *loader;
-
-   if (!drawable || !info || !drawable->screen)
-      return false;
-   loader = drawable->screen->swrast_loader;
-   if (!loader || loader->base.version < 7 || !loader->xv6GetBackbufferInfo)
-      return false;
-   return loader->xv6GetBackbufferInfo(drawable, info,
-                                       drawable->loaderPrivate) != 0;
-}
-
 DEBUG_GET_ONCE_BOOL_OPTION(swrast_no_present, "SWRAST_NO_PRESENT", false);
-
-static bool
-xv6_d3d12_swrast_skip_prefence(void)
-{
-   const char *driver = getenv("GALLIUM_DRIVER");
-   const char *opt = getenv("XV6_D3D12_SWRAST_NO_PREFENCE");
-   const char *async = getenv("XV6_D3D12_ASYNC_FRONTBUFFER");
-
-   if (opt)
-      return strcmp(opt, "0") != 0 && strcmp(opt, "false") != 0;
-   if (async && (strcmp(async, "0") == 0 || strcmp(async, "false") == 0))
-      return false;
-   return driver && strcmp(driver, "d3d12") == 0;
-}
-
-static bool
-xv6_d3d12_swrast_skip_front_flush(void)
-{
-   const char *driver = getenv("GALLIUM_DRIVER");
-   const char *opt = getenv("XV6_D3D12_SWRAST_NO_FRONT_FLUSH");
-
-   if (!driver || strcmp(driver, "d3d12") != 0)
-      return false;
-   return opt && strcmp(opt, "0") != 0 && strcmp(opt, "false") != 0;
-}
-
-static int64_t
-xv6_d3d12_now_us(void)
-{
-   struct timespec ts;
-
-   if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
-      return 0;
-   return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
-}
-
-static bool
-xv6_drisw_perf_log_enabled(void)
-{
-   const char *perf = getenv("XV6_MESA_PERF_LOG");
-
-   return perf && perf[0] && strcmp(perf, "0") != 0 &&
-          strcmp(perf, "false") != 0;
-}
-
-static bool
-xv6_drisw_d3d12_native_present_available(struct dri_drawable *drawable)
-{
-   const char *driver = getenv("GALLIUM_DRIVER");
-   const char *enable = getenv("XV6_D3D12_ENABLE_NATIVE_PRESENT");
-   const __DRIswrastLoaderExtension *loader;
-
-   if (!driver || strcmp(driver, "d3d12") != 0 || !drawable ||
-       !drawable->screen)
-      return false;
-   if (!enable || (strcmp(enable, "1") != 0 &&
-                   strcmp(enable, "true") != 0))
-      return false;
-   loader = drawable->screen->swrast_loader;
-   return loader && loader->base.version >= 10 &&
-          loader->xv6PresentD3D12Resource;
-}
-
-static bool
-xv6_drisw_d3d12_require_native_present(void)
-{
-   const char *driver = getenv("GALLIUM_DRIVER");
-   const char *opt = getenv("XV6_D3D12_REQUIRE_NATIVE_PRESENT");
-
-   if (!driver || strcmp(driver, "d3d12") != 0)
-      return false;
-   if (opt)
-      return strcmp(opt, "0") != 0 && strcmp(opt, "false") != 0;
-   return true;
-}
-
-static unsigned
-xv6_drisw_pipe_format_to_wl_shm(enum pipe_format format)
-{
-   switch (format) {
-   case PIPE_FORMAT_B8G8R8A8_UNORM:
-   case PIPE_FORMAT_B8G8R8A8_SRGB:
-      return 0; /* WL_SHM_FORMAT_ARGB8888 */
-   case PIPE_FORMAT_B8G8R8X8_UNORM:
-   case PIPE_FORMAT_B8G8R8X8_SRGB:
-      return 1; /* WL_SHM_FORMAT_XRGB8888 */
-   default:
-      return UINT_MAX;
-   }
-}
-
-static bool
-xv6_drisw_present_d3d12_shared(struct pipe_context *pipe,
-                               struct dri_drawable *drawable,
-                               struct pipe_resource *ptex)
-{
-   const __DRIswrastLoaderExtension *loader;
-   struct winsys_handle whandle;
-   unsigned wl_format;
-   unsigned adapter_luid_low = 0;
-   unsigned adapter_luid_high = 0;
-   struct pipe_fence_handle *fence = NULL;
-   int fence_fd = -1;
-   uint64_t fence_value = 0;
-   bool perf = xv6_drisw_perf_log_enabled();
-   static unsigned diag_logs;
-
-   if (!xv6_drisw_d3d12_native_present_available(drawable) || !ptex ||
-       !ptex->screen || !ptex->screen->resource_get_handle) {
-      if (perf || diag_logs++ < 8)
-         fprintf(stderr, "xv6-mesa: d3d12-present skip unavailable drawable=%p ptex=%p\n",
-                 (void *)drawable, (void *)ptex);
-      return false;
-   }
-
-   wl_format = xv6_drisw_pipe_format_to_wl_shm(ptex->format);
-   if (wl_format == UINT_MAX) {
-      if (perf || diag_logs++ < 8)
-         fprintf(stderr, "xv6-mesa: d3d12-present skip format pipe=%u\n",
-                 ptex->format);
-      return false;
-   }
-
-   memset(&whandle, 0, sizeof(whandle));
-   whandle.type = WINSYS_HANDLE_TYPE_FD;
-   if (pipe->flush_resource)
-      pipe->flush_resource(pipe, ptex);
-   if (!ptex->screen->resource_get_handle(ptex->screen, pipe, ptex,
-                                          &whandle,
-                                          PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE)) {
-      if (perf || diag_logs++ < 8)
-         fprintf(stderr,
-                 "xv6-mesa: d3d12-present share-handle failed size=%ux%u fmt=%u bind=0x%x\n",
-                 ptex->width0, ptex->height0, ptex->format, ptex->bind);
-      return false;
-   }
-   if (ptex->screen->get_device_luid) {
-      char luid[PIPE_LUID_SIZE] = {0};
-
-      ptex->screen->get_device_luid(ptex->screen, luid);
-      memcpy(&adapter_luid_low, luid, sizeof(adapter_luid_low));
-      memcpy(&adapter_luid_high, luid + sizeof(adapter_luid_low),
-             sizeof(adapter_luid_high));
-   }
-   pipe->flush(pipe, &fence, 0);
-   if (!fence || !ptex->screen->fence_get_win32_handle) {
-      if (perf || diag_logs++ < 8)
-         fprintf(stderr,
-                 "xv6-mesa: d3d12-present fence export unavailable fence=%p get_handle=%p\n",
-                 (void *)fence,
-                 (void *)ptex->screen->fence_get_win32_handle);
-      if (fence)
-         ptex->screen->fence_reference(ptex->screen, &fence, NULL);
-      close(whandle.handle);
-      return false;
-   }
-   fence_fd = (int)(intptr_t)
-      ptex->screen->fence_get_win32_handle(ptex->screen, fence,
-                                           &fence_value);
-   ptex->screen->fence_reference(ptex->screen, &fence, NULL);
-   if (fence_fd < 0 || fence_value == 0) {
-      if (perf || diag_logs++ < 8)
-         fprintf(stderr,
-                 "xv6-mesa: d3d12-present fence shared-handle failed fd=%d value=%" PRIu64 "\n",
-                 fence_fd, fence_value);
-      close(whandle.handle);
-      if (fence_fd >= 0)
-         close(fence_fd);
-      return false;
-   }
-
-   loader = drawable->screen->swrast_loader;
-   if (perf || diag_logs++ < 8)
-      fprintf(stderr,
-              "xv6-mesa: d3d12-present share-handle fd=%d fence_fd=%d fence_value=%" PRIu64 " size=%ux%u fmt=%u bind=0x%x luid=%08x:%08x handle_format=%" PRIu64 " modifier=0x%" PRIx64 " stride=%u offset=%u size_bytes=%" PRIu64 "\n",
-              whandle.handle, fence_fd, fence_value, ptex->width0,
-              ptex->height0, ptex->format, ptex->bind, adapter_luid_low,
-              adapter_luid_high, whandle.format, whandle.modifier,
-              whandle.stride, whandle.offset, whandle.size);
-   if (loader->xv6PresentD3D12Resource(drawable, whandle.handle, fence_fd,
-                                       fence_value,
-                                       (int)ptex->width0,
-                                       (int)ptex->height0, wl_format,
-                                       adapter_luid_low, adapter_luid_high,
-                                       drawable->loaderPrivate))
-      return true;
-
-   if (perf || diag_logs++ < 8)
-      fprintf(stderr,
-              "xv6-mesa: d3d12-present wayland attach failed fd=%d size=%ux%u\n",
-              whandle.handle, ptex->width0, ptex->height0);
-   close(whandle.handle);
-   close(fence_fd);
-   return false;
-}
 
 static inline void
 get_drawable_info(struct dri_drawable *drawable, int *x, int *y, int *w, int *h)
@@ -416,19 +196,6 @@ drisw_present_texture(struct pipe_context *pipe, struct dri_drawable *drawable,
    if (screen->swrast_no_present)
       return;
 
-   if (xv6_drisw_present_d3d12_shared(pipe, drawable, ptex))
-      return;
-   if (xv6_drisw_d3d12_require_native_present()) {
-      static unsigned no_readback_logs;
-
-      if (no_readback_logs++ < 8) {
-         fprintf(stderr,
-                 "xv6-mesa: d3d12 native present unavailable; refusing DRI software/readback present\n");
-         fflush(stderr);
-      }
-      return;
-   }
-
    screen->base.screen->flush_frontbuffer(screen->base.screen, pipe, ptex, 0, 0, drawable, nrects, sub_box);
 }
 
@@ -446,45 +213,9 @@ drisw_copy_to_front(struct pipe_context *pipe,
                     struct pipe_resource *ptex,
                     int nboxes, struct pipe_box *boxes)
 {
-   static unsigned xv6_front_detail_frames;
-   static int64_t xv6_front_detail_present_us;
-   static int64_t xv6_front_detail_invalidate_us;
-   static int64_t xv6_front_detail_total_us;
-   bool perf = xv6_drisw_perf_log_enabled();
-   int64_t t0 = perf ? xv6_d3d12_now_us() : 0;
-   int64_t t_present = 0;
-   int64_t t_invalidate = 0;
-
    drisw_present_texture(pipe, drawable, ptex, nboxes, boxes);
-   if (perf)
-      t_present = xv6_d3d12_now_us();
 
    drisw_invalidate_drawable(drawable);
-   if (perf)
-      t_invalidate = xv6_d3d12_now_us();
-
-   if (perf && t0 > 0 && t_present >= t0 && t_invalidate >= t_present) {
-      xv6_front_detail_frames++;
-      xv6_front_detail_present_us += t_present - t0;
-      xv6_front_detail_invalidate_us += t_invalidate - t_present;
-      xv6_front_detail_total_us += t_invalidate - t0;
-      if (xv6_front_detail_frames >= 60) {
-         fprintf(stderr,
-                 "xv6-mesa: drisw-front-detail avg_us total=%lld present=%lld invalidate=%lld frames=%u\n",
-                 (long long)(xv6_front_detail_total_us /
-                             xv6_front_detail_frames),
-                 (long long)(xv6_front_detail_present_us /
-                             xv6_front_detail_frames),
-                 (long long)(xv6_front_detail_invalidate_us /
-                             xv6_front_detail_frames),
-                 xv6_front_detail_frames);
-         fflush(stderr);
-         xv6_front_detail_frames = 0;
-         xv6_front_detail_present_us = 0;
-         xv6_front_detail_invalidate_us = 0;
-         xv6_front_detail_total_us = 0;
-      }
-   }
 }
 
 /*
@@ -494,22 +225,6 @@ drisw_copy_to_front(struct pipe_context *pipe,
 static void
 drisw_swap_buffers_with_damage(struct dri_drawable *drawable, int nrects, const int *rects)
 {
-   static unsigned xv6_swap_entry_logs;
-   static unsigned xv6_perf_frames;
-   static int64_t xv6_perf_thread_us;
-   static int64_t xv6_perf_flush_us;
-   static int64_t xv6_perf_wait_us;
-   static int64_t xv6_perf_front_us;
-   static int64_t xv6_perf_state_us;
-   static int64_t xv6_perf_total_us;
-   bool perf = xv6_drisw_perf_log_enabled();
-   int64_t t0 = perf ? xv6_d3d12_now_us() : 0;
-   int64_t t_thread = 0;
-   int64_t t_flush = 0;
-   int64_t t_wait = 0;
-   int64_t t_front = 0;
-   int64_t t_state = 0;
-
    /* Damage regions still require us to update the whole front buffer
     * in case the compositor doesn't obey them, so we will just ignore
     * the passed in damage regions and swap the whole buffer
@@ -526,17 +241,10 @@ drisw_swap_buffers_with_damage(struct dri_drawable *drawable, int nrects, const 
 
    /* Wait for glthread to finish because we can't use pipe_context from
     * multiple threads.
-   */
+    */
    _mesa_glthread_finish(ctx->st->ctx);
-   if (perf)
-      t_thread = xv6_d3d12_now_us();
 
    ptex = drawable->textures[ST_ATTACHMENT_BACK_LEFT];
-   if (xv6_swap_entry_logs++ < 8)
-      fprintf(stderr,
-              "xv6-mesa: drisw-swap entry drawable=%p ptex=%p native_present=%d nrects=%d\n",
-              (void *)drawable, (void *)ptex,
-              xv6_drisw_d3d12_native_present_available(drawable), nrects);
 
    if (ptex) {
       struct pipe_fence_handle *fence = NULL;
@@ -544,10 +252,7 @@ drisw_swap_buffers_with_damage(struct dri_drawable *drawable, int nrects, const 
       if (ctx->hud)
          hud_run(ctx->hud, ctx->st->cso_context, ptex);
 
-      if (!xv6_d3d12_swrast_skip_front_flush())
-         st_context_flush(ctx->st, ST_FLUSH_FRONT, &fence, NULL, NULL);
-      if (perf)
-         t_flush = xv6_d3d12_now_us();
+      st_context_flush(ctx->st, ST_FLUSH_FRONT, &fence, NULL, NULL);
 
       if (drawable->stvis.samples > 1) {
          /* Resolve the back buffer. */
@@ -556,51 +261,14 @@ drisw_swap_buffers_with_damage(struct dri_drawable *drawable, int nrects, const 
                        drawable->msaa_textures[ST_ATTACHMENT_BACK_LEFT]);
       }
 
-      if (!xv6_d3d12_swrast_skip_prefence())
-         screen->base.screen->fence_finish(screen->base.screen, ctx->st->pipe,
-                                           fence, OS_TIMEOUT_INFINITE);
-      if (perf)
-         t_wait = xv6_d3d12_now_us();
-      if (fence)
-         screen->base.screen->fence_reference(screen->base.screen, &fence, NULL);
+      screen->base.screen->fence_finish(screen->base.screen, ctx->st->pipe,
+                                        fence, OS_TIMEOUT_INFINITE);
+      screen->base.screen->fence_reference(screen->base.screen, &fence, NULL);
       drisw_copy_to_front(ctx->st->pipe, drawable, ptex, 0, NULL);
-      if (perf)
-         t_front = xv6_d3d12_now_us();
       drawable->buffer_age = 1;
 
+      /* TODO: remove this if the framebuffer state doesn't change. */
       st_context_invalidate_state(ctx->st, ST_INVALIDATE_FB_STATE);
-      if (perf)
-         t_state = xv6_d3d12_now_us();
-
-      if (perf && t0 > 0 && t_thread >= t0 && t_flush >= t_thread &&
-          t_wait >= t_flush && t_front >= t_wait && t_state >= t_front) {
-         xv6_perf_frames++;
-         xv6_perf_thread_us += t_thread - t0;
-         xv6_perf_flush_us += t_flush - t_thread;
-         xv6_perf_wait_us += t_wait - t_flush;
-         xv6_perf_front_us += t_front - t_wait;
-         xv6_perf_state_us += t_state - t_front;
-         xv6_perf_total_us += t_state - t0;
-         if (xv6_perf_frames >= 60 && xv6_drisw_perf_log_enabled()) {
-            fprintf(stderr,
-                    "xv6-mesa: drisw-swap avg_us total=%lld thread=%lld flush=%lld wait=%lld front=%lld state=%lld frames=%u\n",
-                    (long long)(xv6_perf_total_us / xv6_perf_frames),
-                    (long long)(xv6_perf_thread_us / xv6_perf_frames),
-                    (long long)(xv6_perf_flush_us / xv6_perf_frames),
-                    (long long)(xv6_perf_wait_us / xv6_perf_frames),
-                    (long long)(xv6_perf_front_us / xv6_perf_frames),
-                    (long long)(xv6_perf_state_us / xv6_perf_frames),
-                    xv6_perf_frames);
-            fflush(stderr);
-            xv6_perf_frames = 0;
-            xv6_perf_thread_us = 0;
-            xv6_perf_flush_us = 0;
-            xv6_perf_wait_us = 0;
-            xv6_perf_front_us = 0;
-            xv6_perf_state_us = 0;
-            xv6_perf_total_us = 0;
-         }
-      }
    }
 }
 
@@ -631,14 +299,11 @@ drisw_copy_sub_buffer(struct dri_drawable *drawable, int x, int y,
 
       struct pipe_fence_handle *fence = NULL;
 
-      if (!xv6_d3d12_swrast_skip_front_flush())
-         st_context_flush(ctx->st, ST_FLUSH_FRONT, &fence, NULL, NULL);
+      st_context_flush(ctx->st, ST_FLUSH_FRONT, &fence, NULL, NULL);
 
-      if (!xv6_d3d12_swrast_skip_prefence())
-         screen->base.screen->fence_finish(screen->base.screen, ctx->st->pipe,
-                                           fence, OS_TIMEOUT_INFINITE);
-      if (fence)
-         screen->base.screen->fence_reference(screen->base.screen, &fence, NULL);
+      screen->base.screen->fence_finish(screen->base.screen, ctx->st->pipe,
+                                        fence, OS_TIMEOUT_INFINITE);
+      screen->base.screen->fence_reference(screen->base.screen, &fence, NULL);
 
       if (drawable->stvis.samples > 1) {
          /* Resolve the back buffer. */
@@ -823,9 +488,6 @@ drisw_allocate_textures(struct dri_context *stctx,
          /* if we don't do any present, no need for display targets */
          if (statts[i] != ST_ATTACHMENT_DEPTH_STENCIL && !screen->swrast_no_present)
             bind |= PIPE_BIND_DISPLAY_TARGET;
-         if (statts[i] != ST_ATTACHMENT_DEPTH_STENCIL &&
-             xv6_drisw_d3d12_native_present_available(drawable))
-            bind |= PIPE_BIND_SHARED;
 
          if (format == PIPE_FORMAT_NONE)
             continue;
@@ -939,10 +601,6 @@ drisw_init_screen(struct dri_screen *screen, bool driver_name_is_inferred)
    struct pipe_screen *pscreen = NULL;
    const struct drisw_loader_funcs *lf = &drisw_lf;
 
-   fprintf(stderr,
-           "xv6-mesa: drisw_init_screen fd=%d loader=%p version=%u inferred=%d\n",
-           screen->fd, (void *)loader, loader ? loader->base.version : 0,
-           driver_name_is_inferred);
    screen->swrast_no_present = debug_get_option_swrast_no_present();
 
    if (loader->base.version >= 4) {
@@ -958,12 +616,9 @@ drisw_init_screen(struct dri_screen *screen, bool driver_name_is_inferred)
    if (!success)
       success = pipe_loader_sw_probe_dri(&screen->dev, lf);
 
-   fprintf(stderr, "xv6-mesa: drisw pipe_loader success=%d dev=%p\n",
-           success, (void *)screen->dev);
    if (success)
       pscreen = pipe_loader_create_screen(screen->dev, driver_name_is_inferred);
 
-   fprintf(stderr, "xv6-mesa: drisw pscreen=%p\n", (void *)pscreen);
    return pscreen;
 }
 

@@ -469,8 +469,6 @@ virgl_init_screen_caps(struct virgl_screen *vscreen)
    caps->texture_shadow_lod =
       vscreen->caps.caps.v2.capability_bits_v2 & VIRGL_CAP_V2_TEXTURE_SHADOW_LOD;
    caps->native_fence_fd = vscreen->vws->supports_fences;
-   caps->device_reset_status_query =
-      vscreen->vws->get_context_reset_status != NULL;
    caps->dest_surface_srgb_control =
       (vscreen->caps.caps.v2.capability_bits & VIRGL_CAP_SRGB_WRITE_CONTROL) ||
       (vscreen->caps.caps.v2.host_feature_check_version < 1);
@@ -986,7 +984,7 @@ virgl_screen_get_fd(struct pipe_screen *pscreen)
 struct pipe_screen *
 virgl_create_screen(struct virgl_winsys *vws, const struct pipe_screen_config *config)
 {
-   struct virgl_screen *screen;
+   struct virgl_screen *screen = CALLOC_STRUCT(virgl_screen);
 
    const char *VIRGL_GLES_EMULATE_BGRA = "gles_emulate_bgra";
    const char *VIRGL_GLES_APPLY_BGRA_DEST_SWIZZLE = "gles_apply_bgra_dest_swizzle";
@@ -994,10 +992,6 @@ virgl_create_screen(struct virgl_winsys *vws, const struct pipe_screen_config *c
    const char *VIRGL_FORMAT_L8_SRGB_ENABLE_READBACK = "format_l8_srgb_enable_readback";
    const char *VIRGL_SHADER_SYNC = "virgl_shader_sync";
 
-   if (!vws)
-      return NULL;
-
-   screen = CALLOC_STRUCT(virgl_screen);
    if (!screen)
       return NULL;
 

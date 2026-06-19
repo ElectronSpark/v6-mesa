@@ -34,7 +34,6 @@
 #include <errno.h>
 #include <limits.h>
 #include <assert.h>
-#include <fcntl.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include <dlfcn.h>
@@ -62,18 +61,6 @@
 #endif
 
 static const struct gbm_core *core;
-
-#if DETECT_OS_XV6
-static bool
-xv6_gbm_trace_enabled(void)
-{
-   const char *env = getenv("XV6_GBM_DEBUG");
-
-   return env && env[0] && strcmp(env, "0") != 0 &&
-          strcmp(env, "no") != 0 && strcmp(env, "false") != 0 &&
-          strcmp(env, "off") != 0;
-}
-#endif
 
 static GLboolean
 dri_validate_egl_image(void *image, void *data)
@@ -456,17 +443,11 @@ gbm_dri_bo_write(struct gbm_bo *_bo, const void *buf, size_t count)
 static int
 gbm_dri_bo_get_fd(struct gbm_bo *_bo)
 {
-   struct gbm_dri_device *dri = gbm_dri_device(_bo->gbm);
    struct gbm_dri_bo *bo = gbm_dri_bo(_bo);
    int fd;
 
-   if (bo->image == NULL) {
-      if (drmPrimeHandleToFD(dri->base.v0.fd, bo->handle,
-                             DRM_CLOEXEC | DRM_RDWR, &fd) != 0)
-         return -1;
-
-      return fd;
-   }
+   if (bo->image == NULL)
+      return -1;
 
    if (!dri2_query_image(bo->image, __DRI_IMAGE_ATTRIB_FD, &fd))
       return -1;
@@ -548,10 +529,8 @@ gbm_dri_bo_get_plane_fd(struct gbm_bo *_bo, int plane)
       return -1;
    }
 
+   /* dumb BOs can only utilize non-planar formats */
    if (!bo->image) {
-      if (plane == 0)
-         return gbm_dri_bo_get_fd(_bo);
-
       errno = EINVAL;
       return -1;
    }
@@ -861,12 +840,6 @@ create_dumb(struct gbm_device *gbm,
       format == GBM_FORMAT_ARGB8888;
    is_scanout = (usage & GBM_BO_USE_SCANOUT) != 0 &&
       (format == GBM_FORMAT_XRGB8888 || format == GBM_FORMAT_XBGR8888);
-#if DETECT_OS_XV6
-   if (!is_cursor && !is_scanout &&
-       (usage & (GBM_BO_USE_RENDERING | GBM_BO_USE_WRITE | GBM_BO_USE_LINEAR)) &&
-       (format == GBM_FORMAT_XRGB8888 || format == GBM_FORMAT_ARGB8888))
-      is_scanout = true;
-#endif
    if (!is_cursor && !is_scanout) {
       errno = EINVAL;
       return NULL;
@@ -926,13 +899,7 @@ gbm_dri_bo_create(struct gbm_device *gbm,
 
    format = core->v0.format_canonicalize(format);
 
-   if (usage & GBM_BO_USE_WRITE
-#if DETECT_OS_XV6
-       || (!dri->has_dmabuf_export && !(usage & GBM_BO_USE_RENDERING))
-#else
-       || !dri->has_dmabuf_export
-#endif
-       )
+   if (usage & GBM_BO_USE_WRITE || !dri->has_dmabuf_export)
       return create_dumb(gbm, width, height, format, usage);
 
    bo = calloc(1, sizeof *bo);
@@ -1050,16 +1017,8 @@ gbm_dri_bo_create(struct gbm_device *gbm,
                                        mods_filtered ? mods_filtered : modifiers,
                                        mods_filtered ? count_filtered : count,
                                        bo);
-   if (bo->image == NULL) {
-#if DETECT_OS_XV6
-      if (xv6_gbm_trace_enabled())
-         fprintf(stderr,
-                 "xv6-mesa: gbm_dri_bo_create image failed %ux%u fmt=0x%x usage=0x%x has_export=%d\n",
-                 width, height, format, usage,
-                 dri->has_dmabuf_export ? 1 : 0);
-#endif
+   if (bo->image == NULL)
       goto failed;
-   }
 
    free(mods_filtered);
    mods_filtered = NULL;
@@ -1068,13 +1027,6 @@ gbm_dri_bo_create(struct gbm_device *gbm,
                           &bo->base.v0.handle.s32);
    dri2_query_image(bo->image, __DRI_IMAGE_ATTRIB_STRIDE,
                           (int *) &bo->base.v0.stride);
-#if DETECT_OS_XV6
-   if (xv6_gbm_trace_enabled())
-      fprintf(stderr,
-              "xv6-mesa: gbm_dri_bo_create image bo handle=%d stride=%u %ux%u fmt=0x%x usage=0x%x has_export=%d\n",
-              bo->base.v0.handle.s32, bo->base.v0.stride, width, height,
-              format, usage, dri->has_dmabuf_export ? 1 : 0);
-#endif
 
    return &bo->base;
 

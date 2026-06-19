@@ -22,12 +22,7 @@
 
 #ifdef GALLIUM_VIRGL
 #include "virgl/virgl_public.h"
-#include "virgl/drm/virgl_drm_public.h"
 #include "virgl/vtest/virgl_vtest_public.h"
-#if DETECT_OS_XV6
-#include <fcntl.h>
-#include <unistd.h>
-#endif
 #endif
 
 #ifdef GALLIUM_D3D12
@@ -46,16 +41,9 @@ sw_screen_create_named(struct sw_winsys *winsys, const char *driver)
 
 #if defined(GALLIUM_VIRGL)
    if (screen == NULL && strcmp(driver, "virpipe") == 0) {
-#if DETECT_OS_XV6
-      int fd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
-      if (fd >= 0) {
-         screen = virgl_drm_screen_create(fd, NULL);
-         close(fd);
-      }
-#else
-      struct virgl_winsys *vws = virgl_vtest_winsys_wrap(winsys);
+      struct virgl_winsys *vws;
+      vws = virgl_vtest_winsys_wrap(winsys);
       screen = virgl_create_screen(vws, NULL);
-#endif
    }
 #endif
 

@@ -754,13 +754,8 @@ _dep_va_name = host_machine.system() == 'windows' ? 'libva-win32' : 'libva'
 dep_va = dependency(
   _dep_va_name, version : '>= 1.8.0',
   required : _va,
-  fallback : ['libva', 'libva_dep'],
-  default_options : [
-    'c_std=none',
-    'with_x11=no',
-    'with_wayland=no',
-    'with_glx=no',
-  ]
+  allow_fallback : allow_fallback_for_libva,
+  default_options : [ 'c_std=none' ]
 )
 if dep_va.found()
   dep_va_headers = dep_va.partial_dependency(compile_args : true, includes : true)

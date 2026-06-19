@@ -296,19 +296,8 @@ loader_is_device_render_capable(int fd)
    drmDevicePtr dev_ptr;
    bool ret;
 
-   if (drmGetDevice2(fd, 0, &dev_ptr) != 0) {
-      char *driver_name = loader_get_driver_for_fd(fd);
-      bool xv6_virtio =
-         driver_name && strcmp(driver_name, "virtio_gpu") == 0;
-
-      free(driver_name);
-      if (xv6_virtio) {
-         log_(_LOADER_WARNING,
-              "xv6: treating virtio_gpu fd as render-capable without drmGetDevice2 metadata\n");
-         return true;
-      }
+   if (drmGetDevice2(fd, 0, &dev_ptr) != 0)
       return false;
-   }
 
    ret = (dev_ptr->available_nodes & (1 << DRM_NODE_RENDER));
 

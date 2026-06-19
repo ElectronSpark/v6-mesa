@@ -2,7 +2,6 @@
 #define DRM_HELPER_H
 
 #include <stdio.h>
-#include "util/detect_os.h"
 #include "target-helpers/inline_debug_helper.h"
 #include "target-helpers/drm_helper_public.h"
 #include "frontend/drm_driver.h"
@@ -264,7 +263,10 @@ DRM_DRIVER_DESCRIPTOR_STUB(kgsl)
 static struct pipe_screen *
 pipe_virtio_gpu_create_screen(int fd, const struct pipe_screen_config *config)
 {
-   struct pipe_screen *screen = virgl_drm_screen_create(fd, config);
+   struct pipe_screen *screen = NULL;
+
+   if (!screen)
+      screen = virgl_drm_screen_create(fd, config);
 
    return screen ? debug_screen_wrap(screen) : NULL;
 }
