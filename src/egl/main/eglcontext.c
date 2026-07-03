@@ -29,14 +29,131 @@
 
 #include "eglcontext.h"
 #include <assert.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "util/u_debug.h"
 #include "util/macros.h"
 #include "eglconfig.h"
 #include "eglcurrent.h"
 #include "egldisplay.h"
 #include "egllog.h"
 #include "eglsurface.h"
+
+static bool
+_eglContextTraceEnabled(void)
+{
+   return debug_get_bool_option("XV6_MESA_EGL_CONTEXT_TRACE", false);
+}
+
+static const char *
+_eglContextTraceApiName(EGLenum api)
+{
+   switch (api) {
+   case EGL_OPENGL_API:
+      return "opengl";
+   case EGL_OPENGL_ES_API:
+      return "opengles";
+   case EGL_OPENVG_API:
+      return "openvg";
+   case EGL_NONE:
+      return "none";
+   default:
+      return "unknown";
+   }
+}
+
+static const char *
+_eglContextTraceErrorName(EGLint err)
+{
+   switch (err) {
+   case EGL_SUCCESS:
+      return "EGL_SUCCESS";
+   case EGL_BAD_ACCESS:
+      return "EGL_BAD_ACCESS";
+   case EGL_BAD_ALLOC:
+      return "EGL_BAD_ALLOC";
+   case EGL_BAD_ATTRIBUTE:
+      return "EGL_BAD_ATTRIBUTE";
+   case EGL_BAD_CONFIG:
+      return "EGL_BAD_CONFIG";
+   case EGL_BAD_CONTEXT:
+      return "EGL_BAD_CONTEXT";
+   case EGL_BAD_CURRENT_SURFACE:
+      return "EGL_BAD_CURRENT_SURFACE";
+   case EGL_BAD_DISPLAY:
+      return "EGL_BAD_DISPLAY";
+   case EGL_BAD_MATCH:
+      return "EGL_BAD_MATCH";
+   case EGL_BAD_NATIVE_PIXMAP:
+      return "EGL_BAD_NATIVE_PIXMAP";
+   case EGL_BAD_NATIVE_WINDOW:
+      return "EGL_BAD_NATIVE_WINDOW";
+   case EGL_BAD_PARAMETER:
+      return "EGL_BAD_PARAMETER";
+   case EGL_BAD_SURFACE:
+      return "EGL_BAD_SURFACE";
+   default:
+      return "EGL_ERROR_UNKNOWN";
+   }
+}
+
+static void
+_eglContextTraceAttribList(const EGLint *attrib_list)
+{
+   if (!attrib_list) {
+      fprintf(stderr, "null");
+      return;
+   }
+
+   for (unsigned i = 0; i < 64; i++) {
+      if (i > 0)
+         fprintf(stderr, ",");
+      fprintf(stderr, "0x%x", (unsigned) attrib_list[i]);
+      if (attrib_list[i] == EGL_NONE)
+         return;
+   }
+
+   fprintf(stderr, ",...");
+}
+
+static void
+_eglTraceContext(const char *phase, const _EGLContext *ctx,
+                 const _EGLDisplay *disp, const _EGLContext *share_list,
+                 const EGLint *attrib_list, EGLint err, EGLint bad_attr,
+                 const char *detail)
+{
+   if (!_eglContextTraceEnabled())
+      return;
+
+   fprintf(stderr,
+           "xv6_mesa_egl_context_trace phase=%s api=0x%x api_name=%s "
+           "version=%d.%d flags=0x%x profile=0x%x reset=0x%x "
+           "priority=0x%x release=0x%x no_error=%d protected=%d "
+           "display=%p disp_version=%d disp_initialized=%d "
+           "disp_khr_create_context=%d disp_khr_create_context_no_error=%d "
+           "disp_khr_no_config_context=%d disp_khr_surfaceless_context=%d "
+           "config=%p share=%p err=0x%x err_name=%s bad_attr=0x%x "
+           "detail=%s attribs=\"",
+           phase, (unsigned) ctx->ClientAPI,
+           _eglContextTraceApiName(ctx->ClientAPI),
+           ctx->ClientMajorVersion, ctx->ClientMinorVersion,
+           (unsigned) ctx->Flags, (unsigned) ctx->Profile,
+           (unsigned) ctx->ResetNotificationStrategy,
+           (unsigned) ctx->ContextPriority, (unsigned) ctx->ReleaseBehavior,
+           ctx->NoError ? 1 : 0, ctx->Protected ? 1 : 0,
+           (const void *) disp, disp ? disp->Version : -1,
+           disp ? (disp->Initialized ? 1 : 0) : -1,
+           disp ? (disp->Extensions.KHR_create_context ? 1 : 0) : -1,
+           disp ? (disp->Extensions.KHR_create_context_no_error ? 1 : 0) : -1,
+           disp ? (disp->Extensions.KHR_no_config_context ? 1 : 0) : -1,
+           disp ? (disp->Extensions.KHR_surfaceless_context ? 1 : 0) : -1,
+           (void *) ctx->Config, (void *) share_list, (unsigned) err,
+           _eglContextTraceErrorName(err), (unsigned) bad_attr, detail);
+   _eglContextTraceAttribList(attrib_list);
+   fprintf(stderr, "\"\n");
+   fflush(stderr);
+}
 
 /**
  * Return the API bit (one of EGL_xxx_BIT) of the context.
@@ -84,12 +201,20 @@ _eglParseContextAttribList(_EGLContext *ctx, _EGLDisplay *disp,
 {
    EGLenum api = ctx->ClientAPI;
    EGLint i, err = EGL_SUCCESS;
+   EGLint bad_attr = EGL_NONE;
+   const char *detail = "success";
 
-   if (!attrib_list)
+   if (!attrib_list) {
+      _eglTraceContext("parse_exit", ctx, disp, NULL, attrib_list, EGL_SUCCESS,
+                       EGL_NONE, "no-attrib-list");
       return EGL_SUCCESS;
+   }
 
    if (api == EGL_OPENVG_API && attrib_list[0] != EGL_NONE) {
       _eglLog(_EGL_DEBUG, "bad context attribute 0x%04x", attrib_list[0]);
+      _eglTraceContext("parse_exit", ctx, disp, NULL, attrib_list,
+                       EGL_BAD_ATTRIBUTE, attrib_list[0],
+                       "openvg-attribute");
       return EGL_BAD_ATTRIBUTE;
    }
 
@@ -383,16 +508,6 @@ _eglParseContextAttribList(_EGLContext *ctx, _EGLDisplay *disp,
             break;
          }
 
-         /* The KHR_no_error spec only applies against OpenGL 2.0+ and
-          * OpenGL ES 2.0+
-          */
-         if (((api != EGL_OPENGL_API && api != EGL_OPENGL_ES_API) ||
-              ctx->ClientMajorVersion < 2) &&
-             val == EGL_TRUE) {
-            err = EGL_BAD_ATTRIBUTE;
-            break;
-         }
-
          /* Canonicalize value to EGL_TRUE/EGL_FALSE definitions */
          ctx->NoError = !!val;
          break;
@@ -481,6 +596,8 @@ _eglParseContextAttribList(_EGLContext *ctx, _EGLDisplay *disp,
 
       if (err != EGL_SUCCESS) {
          _eglLog(_EGL_DEBUG, "bad context attribute 0x%04x", attr);
+         bad_attr = attr;
+         detail = "attribute-rejected";
          break;
       }
    }
@@ -617,7 +734,22 @@ _eglParseContextAttribList(_EGLContext *ctx, _EGLDisplay *disp,
 
    default:
       err = EGL_BAD_ATTRIBUTE;
+      bad_attr = EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_KHR;
+      detail = "reset-notification-invalid";
       break;
+   }
+
+   /* The KHR_no_error spec only applies against OpenGL 2.0+ and
+    * OpenGL ES 2.0+. Validate after all attributes are parsed so the
+    * result does not depend on whether the no-error token appears before
+    * or after the requested client version.
+    */
+   if (err == EGL_SUCCESS && ctx->NoError &&
+       ((api != EGL_OPENGL_API && api != EGL_OPENGL_ES_API) ||
+        ctx->ClientMajorVersion < 2)) {
+      err = EGL_BAD_ATTRIBUTE;
+      bad_attr = EGL_CONTEXT_OPENGL_NO_ERROR_KHR;
+      detail = "no-error-api-version-invalid";
    }
 
    /* The EGL_KHR_create_context_no_error spec says:
@@ -625,17 +757,25 @@ _eglParseContextAttribList(_EGLContext *ctx, _EGLDisplay *disp,
     *    "BAD_MATCH is generated if the EGL_CONTEXT_OPENGL_NO_ERROR_KHR is TRUE
     * at the same time as a debug or robustness context is specified."
     */
-   if (ctx->NoError &&
+   if (err == EGL_SUCCESS && ctx->NoError &&
        (ctx->Flags & EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR ||
         ctx->Flags & EGL_CONTEXT_OPENGL_ROBUST_ACCESS_BIT_KHR)) {
       err = EGL_BAD_MATCH;
+      detail = "no-error-debug-or-robust-conflict";
    }
 
    if ((ctx->Flags & ~(EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR |
                        EGL_CONTEXT_OPENGL_FORWARD_COMPATIBLE_BIT_KHR |
                        EGL_CONTEXT_OPENGL_ROBUST_ACCESS_BIT_KHR)) != 0) {
       err = EGL_BAD_ATTRIBUTE;
+      bad_attr = EGL_CONTEXT_FLAGS_KHR;
+      detail = "unknown-context-flags";
    }
+
+   if (err != EGL_SUCCESS && detail[0] == 's')
+      detail = "post-parse-validation";
+   _eglTraceContext("parse_exit", ctx, disp, NULL, attrib_list, err, bad_attr,
+                    detail);
 
    return err;
 }
@@ -676,6 +816,9 @@ _eglInitContext(_EGLContext *ctx, _EGLDisplay *disp, _EGLConfig *conf,
    ctx->ContextPriority = EGL_CONTEXT_PRIORITY_MEDIUM_IMG;
    ctx->ReleaseBehavior = EGL_CONTEXT_RELEASE_BEHAVIOR_FLUSH_KHR;
 
+   _eglTraceContext("init_enter", ctx, disp, share_list, attrib_list, EGL_SUCCESS,
+                    EGL_NONE, "defaults");
+
    err = _eglParseContextAttribList(ctx, disp, attrib_list);
    if (err == EGL_SUCCESS && ctx->Config) {
       EGLint api_bit;
@@ -685,10 +828,15 @@ _eglInitContext(_EGLContext *ctx, _EGLDisplay *disp, _EGLConfig *conf,
          _eglLog(_EGL_DEBUG, "context api is 0x%x while config supports 0x%x",
                  api_bit, ctx->Config->RenderableType);
          err = EGL_BAD_CONFIG;
+         _eglTraceContext("config_check_exit", ctx, disp, share_list, attrib_list,
+                          err, EGL_NONE, "renderable-type-mismatch");
       }
    }
-   if (err != EGL_SUCCESS)
+   if (err != EGL_SUCCESS) {
+      _eglTraceContext("init_exit", ctx, disp, share_list, attrib_list, err,
+                       EGL_NONE, "parse-or-config-error");
       return _eglError(err, "eglCreateContext");
+   }
 
    /* The EGL_EXT_create_context_robustness spec says:
     *
@@ -700,6 +848,9 @@ _eglInitContext(_EGLContext *ctx, _EGLDisplay *disp, _EGLConfig *conf,
     */
    if (share_list && share_list->ResetNotificationStrategy !=
                         ctx->ResetNotificationStrategy) {
+      _eglTraceContext("init_exit", ctx, disp, share_list, attrib_list,
+                       EGL_BAD_MATCH, EGL_NONE,
+                       "share-reset-notification-mismatch");
       return _eglError(
          EGL_BAD_MATCH,
          "eglCreateContext() share list notification strategy mismatch");
@@ -712,9 +863,14 @@ _eglInitContext(_EGLContext *ctx, _EGLDisplay *disp, _EGLConfig *conf,
     *    EGL_CONTEXT_OPENGL_NO_ERROR_KHR for the context being created."
     */
    if (share_list && share_list->NoError != ctx->NoError) {
+      _eglTraceContext("init_exit", ctx, disp, share_list, attrib_list,
+                       EGL_BAD_MATCH, EGL_NONE, "share-no-error-mismatch");
       return _eglError(EGL_BAD_MATCH,
                        "eglCreateContext() share list no-error mismatch");
    }
+
+   _eglTraceContext("init_exit", ctx, disp, share_list, attrib_list, EGL_SUCCESS,
+                    EGL_NONE, "success");
 
    return EGL_TRUE;
 }

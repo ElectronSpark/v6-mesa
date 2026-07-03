@@ -73,6 +73,7 @@
 #include "util/os_file.h"
 #include "util/u_atomic.h"
 #include "util/u_call_once.h"
+#include "util/u_debug.h"
 #include "util/u_math.h"
 #include "util/u_vector.h"
 #include "egl_dri2.h"
@@ -1042,6 +1043,105 @@ dri2_terminate(_EGLDisplay *disp)
    return EGL_TRUE;
 }
 
+static bool
+dri2_context_trace_enabled(void)
+{
+   return debug_get_bool_option("XV6_MESA_EGL_CONTEXT_TRACE", false);
+}
+
+static const char *
+dri2_context_trace_api_name(EGLenum api)
+{
+   switch (api) {
+   case EGL_OPENGL_API:
+      return "opengl";
+   case EGL_OPENGL_ES_API:
+      return "opengles";
+   case EGL_OPENVG_API:
+      return "openvg";
+   case EGL_NONE:
+      return "none";
+   default:
+      return "unknown";
+   }
+}
+
+static const char *
+dri2_context_trace_dri_error_name(unsigned dri_error)
+{
+   switch (dri_error) {
+   case __DRI_CTX_ERROR_SUCCESS:
+      return "__DRI_CTX_ERROR_SUCCESS";
+   case __DRI_CTX_ERROR_NO_MEMORY:
+      return "__DRI_CTX_ERROR_NO_MEMORY";
+   case __DRI_CTX_ERROR_BAD_API:
+      return "__DRI_CTX_ERROR_BAD_API";
+   case __DRI_CTX_ERROR_BAD_VERSION:
+      return "__DRI_CTX_ERROR_BAD_VERSION";
+   case __DRI_CTX_ERROR_BAD_FLAG:
+      return "__DRI_CTX_ERROR_BAD_FLAG";
+   case __DRI_CTX_ERROR_UNKNOWN_ATTRIBUTE:
+      return "__DRI_CTX_ERROR_UNKNOWN_ATTRIBUTE";
+   case __DRI_CTX_ERROR_UNKNOWN_FLAG:
+      return "__DRI_CTX_ERROR_UNKNOWN_FLAG";
+   default:
+      return "__DRI_CTX_ERROR_UNKNOWN";
+   }
+}
+
+static void
+dri2_context_trace_attribs(const uint32_t *attribs, unsigned num_attribs)
+{
+   if (!attribs) {
+      fprintf(stderr, "null");
+      return;
+   }
+
+   for (unsigned i = 0; i + 1 < num_attribs; i += 2) {
+      if (i > 0)
+         fprintf(stderr, ",");
+      fprintf(stderr, "0x%x=0x%x", attribs[i], attribs[i + 1]);
+   }
+   if (num_attribs & 1)
+      fprintf(stderr, "%s0x%x", num_attribs > 1 ? "," : "",
+              attribs[num_attribs - 1]);
+}
+
+static void
+dri2_context_trace(const char *phase, const struct dri2_egl_context *ctx,
+                   int dri_api, const struct dri_config *dri_config,
+                   const _EGLContext *share_list, struct dri_context *shared,
+                   unsigned num_attribs, const uint32_t *attribs,
+                   unsigned dri_error,
+                   struct dri_context *dri_context)
+{
+   if (!dri2_context_trace_enabled())
+      return;
+
+   fprintf(stderr,
+           "xv6_mesa_egl_context_trace phase=%s api=0x%x api_name=%s "
+           "version=%d.%d flags=0x%x profile=0x%x reset=0x%x "
+           "priority=0x%x release=0x%x no_error=%d protected=%d "
+           "config=%p dri_api=%d dri_config=%p share=%p shared_dri=%p "
+           "dri_context=%p dri_error=%u dri_error_name=%s "
+           "dri_attrib_count=%u dri_attribs=\"",
+           phase, (unsigned) ctx->base.ClientAPI,
+           dri2_context_trace_api_name(ctx->base.ClientAPI),
+           ctx->base.ClientMajorVersion, ctx->base.ClientMinorVersion,
+           (unsigned) ctx->base.Flags, (unsigned) ctx->base.Profile,
+           (unsigned) ctx->base.ResetNotificationStrategy,
+           (unsigned) ctx->base.ContextPriority,
+           (unsigned) ctx->base.ReleaseBehavior,
+           ctx->base.NoError ? 1 : 0, ctx->base.Protected ? 1 : 0,
+           (void *) ctx->base.Config, dri_api, (void *) dri_config,
+           (void *) share_list, (void *) shared, (void *) dri_context,
+           dri_error,
+           dri2_context_trace_dri_error_name(dri_error), num_attribs);
+   dri2_context_trace_attribs(attribs, num_attribs);
+   fprintf(stderr, "\"\n");
+   fflush(stderr);
+}
+
 /**
  * Set the error code after a call to
  * dri2_egl_display::dri2::createContextAttribs.
@@ -1257,6 +1357,10 @@ dri2_create_context(_EGLDisplay *disp, _EGLConfig *conf,
                                   &num_attribs))
       goto cleanup;
 
+   dri2_context_trace("dri2_create_context_enter", dri2_ctx, api, dri_config,
+                      share_list, shared, num_attribs, ctx_attribs,
+                      __DRI_CTX_ERROR_SUCCESS, NULL);
+
    bool thread_safe = true;
 
 #ifdef HAVE_X11_PLATFORM
@@ -1276,6 +1380,9 @@ dri2_create_context(_EGLDisplay *disp, _EGLConfig *conf,
    dri2_ctx->dri_context = driCreateContextAttribs(
       dri2_dpy->dri_screen_render_gpu, api, dri_config, shared, num_attribs / 2,
       ctx_attribs, &error, dri2_ctx, thread_safe);
+   dri2_context_trace("dri2_create_context_exit", dri2_ctx, api, dri_config,
+                      share_list, shared, num_attribs, ctx_attribs, error,
+                      dri2_ctx->dri_context);
    dri2_create_context_attribs_error(error);
 
    if (!dri2_ctx->dri_context)
