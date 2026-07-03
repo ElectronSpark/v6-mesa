@@ -269,7 +269,10 @@ descriptor=[
 
 # Enums in GLES2, GLES3
 { "apis": ["GLES2", "GLES3"], "params": [
+  [ "BIND_GENERATES_RESOURCE_CHROMIUM", "LOC_CUSTOM, TYPE_BOOLEAN, 0, NO_EXTRA" ],
+  [ "CLIENT_ARRAYS_ANGLE", "LOC_CUSTOM, TYPE_BOOLEAN, 0, NO_EXTRA" ],
   [ "GPU_DISJOINT_EXT", "LOC_CUSTOM, TYPE_INT, 0, extra_EXT_disjoint_timer_query" ],
+  [ "NUM_REQUESTABLE_EXTENSIONS_ANGLE", "LOC_CUSTOM, TYPE_INT, 0, NO_EXTRA" ],
 # ANGLE_pack_reverse_row_order
   [ "PACK_REVERSE_ROW_ORDER_ANGLE", "CONTEXT_BOOL(Pack.Invert), NO_EXTRA" ],
 ]},

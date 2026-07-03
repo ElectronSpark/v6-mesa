@@ -28,9 +28,13 @@ EXT(AMD_vertex_shader_viewport_index        , AMD_vertex_shader_viewport_index  
 
 EXT(ANDROID_extension_pack_es31a            , ANDROID_extension_pack_es31a           ,  x ,  x ,  x ,  31, 2014)
 
+EXT(ANGLE_client_arrays                     , dummy_true                             , GLL, GLC,  x , ES2, 2016)
 EXT(ANGLE_pack_reverse_row_order            , dummy_true                             ,  x ,  x ,  x , ES2, 2011)
+EXT(ANGLE_request_extension                 , dummy_true                             , GLL, GLC,  x , ES2, 2016)
+EXT(ANGLE_robust_client_memory              , dummy_true                             , GLL, GLC,  x , ES2, 2017)
 EXT(ANGLE_texture_compression_dxt3          , ANGLE_texture_compression_dxt          , GLL, GLC, ES1, ES2, 2011)
 EXT(ANGLE_texture_compression_dxt5          , ANGLE_texture_compression_dxt          , GLL, GLC, ES1, ES2, 2011)
+EXT(ANGLE_webgl_compatibility               , dummy_true                             , GLL, GLC,  x , ES2, 2016)
 
 EXT(APPLE_packed_pixels                     , dummy_true                             , GLL,  x ,  x ,  x , 2002)
 EXT(APPLE_sync                              , ARB_sync                               ,  x ,  x , ES1, ES2, 2012)
@@ -212,6 +216,9 @@ EXT(ATI_texture_compression_3dc             , ATI_texture_compression_3dc       
 EXT(ATI_texture_env_combine3                , ATI_texture_env_combine3               , GLL,  x ,  x ,  x , 2002)
 EXT(ATI_texture_float                       , ARB_texture_float                      , GLL, GLC,  x ,  x , 2002)
 EXT(ATI_texture_mirror_once                 , ATI_texture_mirror_once                , GLL, GLC,  x ,  x , 2006)
+
+EXT(CHROMIUM_bind_generates_resource        , dummy_true                             , GLL, GLC,  x , ES2, 2016)
+EXT(CHROMIUM_copy_texture                   , dummy_true                             , GLL, GLC,  x , ES2, 2011)
 
 EXT(EXT_EGL_image_storage                   , EXT_EGL_image_storage                  , GLL, GLC , x ,  30, 2018)
 EXT(EXT_EGL_image_storage_compression       , EXT_EGL_image_storage                  , GLL, GLC , x ,  30, 2021)

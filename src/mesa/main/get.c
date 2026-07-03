@@ -48,6 +48,19 @@
 #include "state_tracker/st_context.h"
 #include "api_exec_decl.h"
 
+#ifndef GL_BIND_GENERATES_RESOURCE_CHROMIUM
+#define GL_BIND_GENERATES_RESOURCE_CHROMIUM 0x9244
+#endif
+#ifndef GL_REQUESTABLE_EXTENSIONS_ANGLE
+#define GL_REQUESTABLE_EXTENSIONS_ANGLE 0x93A8
+#endif
+#ifndef GL_NUM_REQUESTABLE_EXTENSIONS_ANGLE
+#define GL_NUM_REQUESTABLE_EXTENSIONS_ANGLE 0x93A9
+#endif
+#ifndef GL_CLIENT_ARRAYS_ANGLE
+#define GL_CLIENT_ARRAYS_ANGLE 0x93AA
+#endif
+
 /* This is a table driven implemetation of the glGet*v() functions.
  * The basic idea is that most getters just look up an int somewhere
  * in struct gl_context and then convert it to a bool or float according to
@@ -766,6 +779,13 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
       v->value_bool = _mesa_IsEnabled(d->pname);
       break;
 
+   case GL_BIND_GENERATES_RESOURCE_CHROMIUM:
+      v->value_bool = GL_TRUE;
+      break;
+   case GL_CLIENT_ARRAYS_ANGLE:
+      v->value_bool = GL_FALSE;
+      break;
+
    case GL_LINE_STIPPLE_PATTERN:
       /* This is the only GLushort, special case it here by promoting
        * to an int rather than introducing a new type. */
@@ -953,6 +973,10 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
 
    case GL_NUM_EXTENSIONS:
       v->value_int = _mesa_get_extension_count(ctx);
+      break;
+
+   case GL_NUM_REQUESTABLE_EXTENSIONS_ANGLE:
+      v->value_int = 0;
       break;
 
    case GL_IMPLEMENTATION_COLOR_READ_TYPE_OES:

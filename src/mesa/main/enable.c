@@ -49,6 +49,14 @@
 #include "state_tracker/st_cb_bitmap.h"
 #include "state_tracker/st_context.h"
 
+#ifndef GL_BIND_GENERATES_RESOURCE_CHROMIUM
+#define GL_BIND_GENERATES_RESOURCE_CHROMIUM 0x9244
+#endif
+
+#ifndef GL_CLIENT_ARRAYS_ANGLE
+#define GL_CLIENT_ARRAYS_ANGLE 0x93AA
+#endif
+
 void
 _mesa_update_derived_primitive_restart_state(struct gl_context *ctx)
 {
@@ -490,6 +498,13 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
                   ctx->NewState);
 
    switch (cap) {
+      case GL_BIND_GENERATES_RESOURCE_CHROMIUM:
+      case GL_CLIENT_ARRAYS_ANGLE:
+         /* xv6 Chromium compatibility: these advertise immutable context
+          * capabilities that Chromium probes through enable/isenabled state.
+          */
+         return;
+
       case GL_ALPHA_TEST:
          if (!_mesa_is_desktop_gl_compat(ctx) && !_mesa_is_gles1(ctx))
             goto invalid_enum_error;
@@ -1654,6 +1669,11 @@ _mesa_IsEnabled( GLenum cap )
    ASSERT_OUTSIDE_BEGIN_END_WITH_RETVAL(ctx, 0);
 
    switch (cap) {
+      case GL_BIND_GENERATES_RESOURCE_CHROMIUM:
+         return GL_TRUE;
+      case GL_CLIENT_ARRAYS_ANGLE:
+         return GL_FALSE;
+
       case GL_ALPHA_TEST:
          if (!_mesa_is_desktop_gl_compat(ctx) && !_mesa_is_gles1(ctx))
             goto invalid_enum_error;

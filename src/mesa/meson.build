@@ -175,6 +175,7 @@ files_libmesa = files(
   'main/renderbuffer.c',
   'main/renderbuffer.h',
   'main/robustness.c',
+  'main/xv6_angle_passthrough.c',
   'main/samplerobj.c',
   'main/samplerobj.h',
   'main/scissor.c',
