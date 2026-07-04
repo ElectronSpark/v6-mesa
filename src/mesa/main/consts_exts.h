@@ -45,6 +45,9 @@ struct gl_extensions
 {
    GLboolean dummy;  /* don't remove this! */
    GLboolean dummy_true;  /* Set true by _mesa_init_extensions(). */
+   GLboolean ANGLE_client_arrays;
+   GLboolean ANGLE_request_extension;
+   GLboolean ANGLE_robust_client_memory;
    GLboolean ANGLE_texture_compression_dxt;
    GLboolean ARB_ES2_compatibility;
    GLboolean ARB_ES3_compatibility;
@@ -159,6 +162,7 @@ struct gl_extensions
    GLboolean ARB_vertex_type_10f_11f_11f_rev;
    GLboolean ARB_vertex_type_2_10_10_10_rev;
    GLboolean ARB_viewport_array;
+   GLboolean CHROMIUM_bind_generates_resource;
    GLboolean EXT_blend_equation_separate;
    GLboolean EXT_color_buffer_float;
    GLboolean EXT_color_buffer_half_float;

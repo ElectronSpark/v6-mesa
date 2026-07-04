@@ -218,6 +218,24 @@ extern mesa_format
 _mesa_validate_texbuffer_format(const struct gl_context *ctx,
                                 GLenum internalFormat);
 
+extern void
+_mesa_TexImage2D_with_client_memsize(GLenum target, GLint level,
+                                     GLint internalFormat,
+                                     GLsizei width, GLsizei height,
+                                     GLint border, GLenum format,
+                                     GLenum type, GLsizei clientMemSize,
+                                     const GLvoid *pixels,
+                                     const char *callerName);
+
+extern void
+_mesa_TexSubImage2D_with_client_memsize(GLenum target, GLint level,
+                                        GLint xoffset, GLint yoffset,
+                                        GLsizei width, GLsizei height,
+                                        GLenum format, GLenum type,
+                                        GLsizei clientMemSize,
+                                        const GLvoid *pixels,
+                                        const char *callerName);
+
 
 bool
 _mesa_legal_texture_base_format_for_target(struct gl_context *ctx,

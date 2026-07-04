@@ -780,6 +780,125 @@
     <enum name="PACK_REVERSE_ROW_ORDER_ANGLE"           value="0x93A4"/>
 </category>
 
+<category name="GL_ANGLE_client_arrays" number="9991">
+    <enum name="CLIENT_ARRAYS_ANGLE"                    value="0x93AA"/>
+</category>
+
+<category name="GL_ANGLE_request_extension" number="9992">
+    <enum name="REQUESTABLE_EXTENSIONS_ANGLE"           value="0x93A8"/>
+    <enum name="NUM_REQUESTABLE_EXTENSIONS_ANGLE" count="1" value="0x93A9">
+        <size name="Get" mode="get"/>
+    </enum>
+    <function name="RequestExtensionANGLE" es2="2.0" desktop="false">
+        <param name="name" type="const GLchar *"/>
+    </function>
+</category>
+
+<category name="GL_CHROMIUM_bind_generates_resource" number="9993">
+    <enum name="BIND_GENERATES_RESOURCE_CHROMIUM" count="1" value="0x9244">
+        <size name="Get" mode="get"/>
+    </enum>
+</category>
+
+<category name="GL_ANGLE_robust_client_memory" number="9995">
+    <function name="GetBooleanvRobustANGLE" es2="2.0" desktop="false">
+        <param name="pname" type="GLenum"/>
+        <param name="paramCount" type="GLsizei"/>
+        <param name="length" type="GLsizei *" output="true"/>
+        <param name="data" type="GLboolean *" output="true"/>
+    </function>
+    <function name="GetFloatvRobustANGLE" es2="2.0" desktop="false">
+        <param name="pname" type="GLenum"/>
+        <param name="paramCount" type="GLsizei"/>
+        <param name="length" type="GLsizei *" output="true"/>
+        <param name="data" type="GLfloat *" output="true"/>
+    </function>
+    <function name="GetIntegervRobustANGLE" es2="2.0" desktop="false">
+        <param name="pname" type="GLenum"/>
+        <param name="paramCount" type="GLsizei"/>
+        <param name="length" type="GLsizei *" output="true"/>
+        <param name="data" type="GLint *" output="true"/>
+    </function>
+    <function name="GetInteger64vRobustANGLE" es2="3.0" desktop="false">
+        <param name="pname" type="GLenum"/>
+        <param name="paramCount" type="GLsizei"/>
+        <param name="length" type="GLsizei *" output="true"/>
+        <param name="data" type="GLint64 *" output="true"/>
+    </function>
+    <function name="GetIntegeri_vRobustANGLE" es2="3.0" desktop="false">
+        <param name="target" type="GLenum"/>
+        <param name="index" type="GLuint"/>
+        <param name="paramCount" type="GLsizei"/>
+        <param name="length" type="GLsizei *" output="true"/>
+        <param name="data" type="GLint *" output="true"/>
+    </function>
+    <function name="GetInteger64i_vRobustANGLE" es2="3.0" desktop="false">
+        <param name="target" type="GLenum"/>
+        <param name="index" type="GLuint"/>
+        <param name="paramCount" type="GLsizei"/>
+        <param name="length" type="GLsizei *" output="true"/>
+        <param name="data" type="GLint64 *" output="true"/>
+    </function>
+    <function name="GetUniformfvRobustANGLE" es2="2.0" desktop="false">
+        <param name="program" type="GLuint"/>
+        <param name="location" type="GLint"/>
+        <param name="bufSize" type="GLsizei"/>
+        <param name="length" type="GLsizei *" output="true"/>
+        <param name="params" type="GLfloat *" output="true"/>
+    </function>
+    <function name="GetUniformivRobustANGLE" es2="2.0" desktop="false">
+        <param name="program" type="GLuint"/>
+        <param name="location" type="GLint"/>
+        <param name="bufSize" type="GLsizei"/>
+        <param name="length" type="GLsizei *" output="true"/>
+        <param name="params" type="GLint *" output="true"/>
+    </function>
+    <function name="GetUniformuivRobustANGLE" es2="3.0" desktop="false">
+        <param name="program" type="GLuint"/>
+        <param name="location" type="GLint"/>
+        <param name="bufSize" type="GLsizei"/>
+        <param name="length" type="GLsizei *" output="true"/>
+        <param name="params" type="GLuint *" output="true"/>
+    </function>
+    <function name="ReadPixelsRobustANGLE" es2="2.0" desktop="false">
+        <param name="x" type="GLint"/>
+        <param name="y" type="GLint"/>
+        <param name="width" type="GLsizei"/>
+        <param name="height" type="GLsizei"/>
+        <param name="format" type="GLenum"/>
+        <param name="type" type="GLenum"/>
+        <param name="bufSize" type="GLsizei"/>
+        <param name="length" type="GLsizei *" output="true"/>
+        <param name="columns" type="GLsizei *" output="true"/>
+        <param name="rows" type="GLsizei *" output="true"/>
+        <param name="pixels" type="GLvoid *" output="true"/>
+    </function>
+    <function name="TexImage2DRobustANGLE" es2="2.0" desktop="false">
+        <param name="target" type="GLenum"/>
+        <param name="level" type="GLint"/>
+        <param name="internalformat" type="GLint"/>
+        <param name="width" type="GLsizei"/>
+        <param name="height" type="GLsizei"/>
+        <param name="border" type="GLint"/>
+        <param name="format" type="GLenum"/>
+        <param name="type" type="GLenum"/>
+        <param name="bufSize" type="GLsizei"/>
+        <param name="pixels" type="const GLvoid *"/>
+    </function>
+    <function name="TexSubImage2DRobustANGLE" es2="2.0" desktop="false">
+        <param name="target" type="GLenum"/>
+        <param name="level" type="GLint"/>
+        <param name="xoffset" type="GLint"/>
+        <param name="yoffset" type="GLint"/>
+        <param name="width" type="GLsizei"/>
+        <param name="height" type="GLsizei"/>
+        <param name="format" type="GLenum"/>
+        <param name="type" type="GLenum"/>
+        <param name="bufSize" type="GLsizei"/>
+        <param name="pixels" type="const GLvoid *"/>
+    </function>
+</category>
+
 <!-- 111. GL_ANGLE_texture_compression_dxt -->
 <category name="GL_ANGLE_texture_compression_dxt" number="111">
     <enum name="COMPRESSED_RGBA_S3TC_DXT3_ANGLE"        value="0x83F2"/>

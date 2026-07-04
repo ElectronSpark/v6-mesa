@@ -1666,6 +1666,19 @@ all_functions = [
     "GetnHistogramARB",
     "GetnMinmaxARB",
     "GetnSeparableFilterARB",
+    "RequestExtensionANGLE",
+    "GetBooleanvRobustANGLE",
+    "GetFloatvRobustANGLE",
+    "GetIntegervRobustANGLE",
+    "GetInteger64vRobustANGLE",
+    "GetIntegeri_vRobustANGLE",
+    "GetInteger64i_vRobustANGLE",
+    "GetUniformfvRobustANGLE",
+    "GetUniformivRobustANGLE",
+    "GetUniformuivRobustANGLE",
+    "ReadPixelsRobustANGLE",
+    "TexImage2DRobustANGLE",
+    "TexSubImage2DRobustANGLE",
 ]
 
 offsets = {}

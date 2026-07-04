@@ -48,6 +48,18 @@
 #include "state_tracker/st_context.h"
 #include "api_exec_decl.h"
 
+#ifndef GL_NUM_REQUESTABLE_EXTENSIONS_ANGLE
+#define GL_NUM_REQUESTABLE_EXTENSIONS_ANGLE 0x93A9
+#endif
+
+#ifndef GL_CLIENT_ARRAYS_ANGLE
+#define GL_CLIENT_ARRAYS_ANGLE 0x93AA
+#endif
+
+#ifndef GL_BIND_GENERATES_RESOURCE_CHROMIUM
+#define GL_BIND_GENERATES_RESOURCE_CHROMIUM 0x9244
+#endif
+
 /* This is a table driven implemetation of the glGet*v() functions.
  * The basic idea is that most getters just look up an int somewhere
  * in struct gl_context and then convert it to a bool or float according to
@@ -603,6 +615,9 @@ EXTRA_EXT(OVR_multiview);
 EXTRA_EXT(NV_timeline_semaphore);
 EXTRA_EXT(EXT_mesh_shader);
 EXTRA_EXT(EXT_shader_pixel_local_storage);
+EXTRA_EXT(ANGLE_client_arrays);
+EXTRA_EXT(ANGLE_request_extension);
+EXTRA_EXT(CHROMIUM_bind_generates_resource);
 
 static const int extra_ARB_gl_spirv_or_es2_compat[] = {
    EXT(ARB_gl_spirv),
@@ -953,6 +968,9 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
 
    case GL_NUM_EXTENSIONS:
       v->value_int = _mesa_get_extension_count(ctx);
+      break;
+   case GL_NUM_REQUESTABLE_EXTENSIONS_ANGLE:
+      v->value_int = 0;
       break;
 
    case GL_IMPLEMENTATION_COLOR_READ_TYPE_OES:

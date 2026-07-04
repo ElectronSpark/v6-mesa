@@ -44,6 +44,12 @@ descriptor=[
 # GL_ARB_multitexture
   [ "ACTIVE_TEXTURE", "LOC_CUSTOM, TYPE_INT, 0, NO_EXTRA" ],
 
+# GL_ANGLE_client_arrays
+  [ "CLIENT_ARRAYS_ANGLE", "CONST(0), extra_ANGLE_client_arrays" ],
+
+# GL_CHROMIUM_bind_generates_resource
+  [ "BIND_GENERATES_RESOURCE_CHROMIUM", "CONST(1), extra_CHROMIUM_bind_generates_resource" ],
+
 # Note that all the OES_* extensions require that the Mesa "struct
 # gl_extensions" include a member with the name of the extension.
 # That structure does not yet include OES extensions (and we're
@@ -142,6 +148,11 @@ descriptor=[
 # GL_EXT_memory_object_win32
   [ "DEVICE_LUID_EXT", "LOC_CUSTOM, TYPE_INT_2, NO_OFFSET, NO_EXTRA" ],
   [ "DEVICE_NODE_MASK_EXT", "LOC_CUSTOM, TYPE_INT_4, NO_OFFSET, NO_EXTRA" ],
+]},
+
+# GL_ANGLE_request_extension
+{ "apis": ["GLES2"], "params": [
+  [ "NUM_REQUESTABLE_EXTENSIONS_ANGLE", "LOC_CUSTOM, TYPE_INT, 0, extra_ANGLE_request_extension" ],
 ]},
 
 # Enums in OpenGL and GLES1

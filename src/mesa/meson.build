@@ -168,6 +168,7 @@ files_libmesa = files(
   'main/querymatrix.c',
   'main/queryobj.c',
   'main/queryobj.h',
+  'main/xv6_angle_passthrough.c',
   'main/rastpos.c',
   'main/rastpos.h',
   'main/readpix.c',

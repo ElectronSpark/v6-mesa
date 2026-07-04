@@ -1896,7 +1896,8 @@ texture_error_check( struct gl_context *ctx,
                      GLenum format, GLenum type,
                      GLint width, GLint height,
                      GLint depth, GLint border,
-                     const GLvoid *pixels )
+                     GLsizei clientMemSize, const GLvoid *pixels,
+                     const char *callerName )
 {
    GLenum err;
 
@@ -1973,7 +1974,7 @@ texture_error_check( struct gl_context *ctx,
    /* validate the bound PBO, if any */
    if (!_mesa_validate_pbo_source(ctx, dimensions, &ctx->Unpack,
                                   width, height, depth, format, type,
-                                  INT_MAX, pixels, "glTexImage")) {
+                                  clientMemSize, pixels, callerName)) {
       return GL_TRUE;
    }
 
@@ -2236,7 +2237,7 @@ texsubimage_error_check(struct gl_context *ctx, GLuint dimensions,
                         GLint xoffset, GLint yoffset, GLint zoffset,
                         GLint width, GLint height, GLint depth,
                         GLenum format, GLenum type, const GLvoid *pixels,
-                        const char *callerName)
+                        GLsizei clientMemSize, const char *callerName)
 {
    struct gl_texture_image *texImage;
    GLenum err;
@@ -2303,7 +2304,7 @@ texsubimage_error_check(struct gl_context *ctx, GLuint dimensions,
    /* validate the bound PBO, if any */
    if (!_mesa_validate_pbo_source(ctx, dimensions, &ctx->Unpack,
                                   width, height, depth, format, type,
-                                  INT_MAX, pixels, callerName)) {
+                                  clientMemSize, pixels, callerName)) {
       return GL_TRUE;
    }
 
@@ -3101,12 +3102,15 @@ lookup_texture_ext_dsa(struct gl_context *ctx, GLenum target, GLuint texture,
  * \param imageSize  only used for glCompressedTexImage1D/2D/3D calls.
  */
 static ALWAYS_INLINE void
-teximage(struct gl_context *ctx, GLboolean compressed, GLuint dims,
-         struct gl_texture_object *texObj,
-         GLenum target, GLint level, GLint internalFormat,
-         GLsizei width, GLsizei height, GLsizei depth,
-         GLint border, GLenum format, GLenum type,
-         GLsizei imageSize, const GLvoid *pixels, bool no_error)
+teximage_with_client_memsize(struct gl_context *ctx, GLboolean compressed,
+                             GLuint dims,
+                             struct gl_texture_object *texObj,
+                             GLenum target, GLint level,
+                             GLint internalFormat, GLsizei width,
+                             GLsizei height, GLsizei depth, GLint border,
+                             GLenum format, GLenum type, GLsizei imageSize,
+                             const GLvoid *pixels, bool no_error,
+                             GLsizei clientMemSize, const char *callerName)
 {
    const char *func = compressed ? "glCompressedTexImage" : "glTexImage";
    struct gl_pixelstore_attrib unpack_no_border;
@@ -3161,7 +3165,7 @@ teximage(struct gl_context *ctx, GLboolean compressed, GLuint dims,
       } else {
          if (texture_error_check(ctx, dims, target, texObj, level, internalFormat,
                                  format, type, width, height, depth, border,
-                                 pixels))
+                                 clientMemSize, pixels, callerName))
             return;
       }
    }
@@ -3320,6 +3324,20 @@ teximage(struct gl_context *ctx, GLboolean compressed, GLuint dims,
    }
 }
 
+static ALWAYS_INLINE void
+teximage(struct gl_context *ctx, GLboolean compressed, GLuint dims,
+         struct gl_texture_object *texObj,
+         GLenum target, GLint level, GLint internalFormat,
+         GLsizei width, GLsizei height, GLsizei depth,
+         GLint border, GLenum format, GLenum type,
+         GLsizei imageSize, const GLvoid *pixels, bool no_error)
+{
+   teximage_with_client_memsize(ctx, compressed, dims, texObj, target, level,
+                                internalFormat, width, height, depth, border,
+                                format, type, imageSize, pixels, no_error,
+                                INT_MAX, "glTexImage");
+}
+
 
 /* This is a wrapper around teximage() so that we can force the KHR_no_error
  * logic to be inlined without inlining the function into all the callers.
@@ -3404,6 +3422,25 @@ _mesa_TexImage2D( GLenum target, GLint level, GLint internalFormat,
    GET_CURRENT_CONTEXT(ctx);
    teximage_err(ctx, GL_FALSE, 2, target, level, internalFormat, width, height, 1,
                 border, format, type, 0, pixels);
+}
+
+void
+_mesa_TexImage2D_with_client_memsize(GLenum target, GLint level,
+                                     GLint internalFormat,
+                                     GLsizei width, GLsizei height,
+                                     GLint border, GLenum format,
+                                     GLenum type, GLsizei clientMemSize,
+                                     const GLvoid *pixels,
+                                     const char *callerName)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   if (!ctx->Unpack.BufferObj && !pixels)
+      clientMemSize = INT_MAX;
+
+   teximage_with_client_memsize(ctx, GL_FALSE, 2, NULL, target, level,
+                                internalFormat, width, height, 1, border,
+                                format, type, 0, pixels, false,
+                                clientMemSize, callerName);
 }
 
 void GLAPIENTRY
@@ -3823,11 +3860,15 @@ texture_sub_image(struct gl_context *ctx, GLuint dims,
  * Must split this out this way because of GL_TEXTURE_CUBE_MAP.
  */
 static void
-texsubimage_err(struct gl_context *ctx, GLuint dims, GLenum target, GLint level,
-                GLint xoffset, GLint yoffset, GLint zoffset,
-                GLsizei width, GLsizei height, GLsizei depth,
-                GLenum format, GLenum type, const GLvoid *pixels,
-                const char *callerName)
+texsubimage_err_with_client_memsize(struct gl_context *ctx, GLuint dims,
+                                    GLenum target, GLint level,
+                                    GLint xoffset, GLint yoffset,
+                                    GLint zoffset, GLsizei width,
+                                    GLsizei height, GLsizei depth,
+                                    GLenum format, GLenum type,
+                                    const GLvoid *pixels,
+                                    GLsizei clientMemSize,
+                                    const char *callerName)
 {
    struct gl_texture_object *texObj;
    struct gl_texture_image *texImage;
@@ -3846,7 +3887,7 @@ texsubimage_err(struct gl_context *ctx, GLuint dims, GLenum target, GLint level,
    if (texsubimage_error_check(ctx, dims, texObj, target, level,
                                xoffset, yoffset, zoffset,
                                width, height, depth, format, type,
-                               pixels, callerName)) {
+                               pixels, clientMemSize, callerName)) {
       return;   /* error was detected */
    }
 
@@ -3864,6 +3905,19 @@ texsubimage_err(struct gl_context *ctx, GLuint dims, GLenum target, GLint level,
    texture_sub_image(ctx, dims, texObj, texImage, target, level,
                      xoffset, yoffset, zoffset, width, height, depth,
                      format, type, pixels);
+}
+
+static void
+texsubimage_err(struct gl_context *ctx, GLuint dims, GLenum target, GLint level,
+                GLint xoffset, GLint yoffset, GLint zoffset,
+                GLsizei width, GLsizei height, GLsizei depth,
+                GLenum format, GLenum type, const GLvoid *pixels,
+                const char *callerName)
+{
+   texsubimage_err_with_client_memsize(ctx, dims, target, level,
+                                       xoffset, yoffset, zoffset,
+                                       width, height, depth, format, type,
+                                       pixels, INT_MAX, callerName);
 }
 
 
@@ -3933,7 +3987,7 @@ texturesubimage(struct gl_context *ctx, GLuint dims,
       if (texsubimage_error_check(ctx, dims, texObj, texObj->Target, level,
                                   xoffset, yoffset, zoffset,
                                   width, height, depth, format, type,
-                                  pixels, callerName)) {
+                                  pixels, INT_MAX, callerName)) {
          return;   /* error was detected */
       }
    }
@@ -4087,6 +4141,26 @@ _mesa_TexSubImage2D( GLenum target, GLint level,
                    xoffset, yoffset, 0,
                    width, height, 1,
                    format, type, pixels, "glTexSubImage2D");
+}
+
+void
+_mesa_TexSubImage2D_with_client_memsize(GLenum target, GLint level,
+                                        GLint xoffset, GLint yoffset,
+                                        GLsizei width, GLsizei height,
+                                        GLenum format, GLenum type,
+                                        GLsizei clientMemSize,
+                                        const GLvoid *pixels,
+                                        const char *callerName)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   if (!ctx->Unpack.BufferObj && !pixels)
+      clientMemSize = INT_MAX;
+
+   texsubimage_err_with_client_memsize(ctx, 2, target, level,
+                                       xoffset, yoffset, 0,
+                                       width, height, 1,
+                                       format, type, pixels,
+                                       clientMemSize, callerName);
 }
 
 

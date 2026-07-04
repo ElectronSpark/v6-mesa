@@ -39,6 +39,10 @@
 #include "pipe/p_context.h"
 #include "pipe/p_screen.h"
 
+#ifndef GL_REQUESTABLE_EXTENSIONS_ANGLE
+#define GL_REQUESTABLE_EXTENSIONS_ANGLE 0x93A8
+#endif
+
 /**
  * Return the string for a glGetString(GL_SHADING_LANGUAGE_VERSION) query.
  */
@@ -161,6 +165,10 @@ _mesa_GetString( GLenum name )
          if (!ctx->Extensions.String)
             ctx->Extensions.String = _mesa_make_extension_string(ctx);
          return (const GLubyte *) ctx->Extensions.String;
+      case GL_REQUESTABLE_EXTENSIONS_ANGLE:
+         if (_mesa_has_ANGLE_request_extension(ctx))
+            return (const GLubyte *) "";
+         break;
       case GL_SHADING_LANGUAGE_VERSION:
          if (_mesa_is_gles1(ctx))
             break;
@@ -201,6 +209,13 @@ _mesa_GetStringi(GLenum name, GLuint index)
          return (const GLubyte *) 0;
       }
       return _mesa_get_enabled_extension(ctx, index);
+   case GL_REQUESTABLE_EXTENSIONS_ANGLE:
+      if (!_mesa_has_ANGLE_request_extension(ctx)) {
+         _mesa_error(ctx, GL_INVALID_ENUM, "glGetStringi");
+         return (const GLubyte *) 0;
+      }
+      _mesa_error(ctx, GL_INVALID_VALUE, "glGetStringi(index=%u)", index);
+      return (const GLubyte *) 0;
    case GL_SHADING_LANGUAGE_VERSION:
       {
          char *version;

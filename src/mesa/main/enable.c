@@ -46,6 +46,10 @@
 #include "varray.h"
 #include "api_exec_decl.h"
 
+#ifndef GL_CLIENT_ARRAYS_ANGLE
+#define GL_CLIENT_ARRAYS_ANGLE 0x93AA
+#endif
+
 #include "state_tracker/st_cb_bitmap.h"
 #include "state_tracker/st_context.h"
 
@@ -1825,6 +1829,10 @@ _mesa_IsEnabled( GLenum cap )
          return ctx->Polygon.OffsetLine;
       case GL_POLYGON_OFFSET_FILL:
          return ctx->Polygon.OffsetFill;
+      case GL_CLIENT_ARRAYS_ANGLE:
+         if (!_mesa_has_ANGLE_client_arrays(ctx))
+            goto invalid_enum_error;
+         return GL_FALSE;
       case GL_RESCALE_NORMAL_EXT:
          if (!_mesa_is_desktop_gl_compat(ctx) && !_mesa_is_gles1(ctx))
             goto invalid_enum_error;
