@@ -1667,6 +1667,8 @@ all_functions = [
     "GetnMinmaxARB",
     "GetnSeparableFilterARB",
     "RequestExtensionANGLE",
+    "CopyTextureCHROMIUM",
+    "CopySubTextureCHROMIUM",
     "GetBooleanvRobustANGLE",
     "GetFloatvRobustANGLE",
     "GetIntegervRobustANGLE",

@@ -800,6 +800,37 @@
     </enum>
 </category>
 
+<category name="GL_CHROMIUM_copy_texture" number="9994">
+    <function name="CopyTextureCHROMIUM" es2="2.0" desktop="false">
+        <param name="sourceId" type="GLuint"/>
+        <param name="sourceLevel" type="GLint"/>
+        <param name="destTarget" type="GLenum"/>
+        <param name="destId" type="GLuint"/>
+        <param name="destLevel" type="GLint"/>
+        <param name="internalFormat" type="GLenum"/>
+        <param name="destType" type="GLenum"/>
+        <param name="unpackFlipY" type="GLboolean"/>
+        <param name="unpackPremultiplyAlpha" type="GLboolean"/>
+        <param name="unpackUnmultiplyAlpha" type="GLboolean"/>
+    </function>
+    <function name="CopySubTextureCHROMIUM" es2="2.0" desktop="false">
+        <param name="sourceId" type="GLuint"/>
+        <param name="sourceLevel" type="GLint"/>
+        <param name="destTarget" type="GLenum"/>
+        <param name="destId" type="GLuint"/>
+        <param name="destLevel" type="GLint"/>
+        <param name="xoffset" type="GLint"/>
+        <param name="yoffset" type="GLint"/>
+        <param name="x" type="GLint"/>
+        <param name="y" type="GLint"/>
+        <param name="width" type="GLsizei"/>
+        <param name="height" type="GLsizei"/>
+        <param name="unpackFlipY" type="GLboolean"/>
+        <param name="unpackPremultiplyAlpha" type="GLboolean"/>
+        <param name="unpackUnmultiplyAlpha" type="GLboolean"/>
+    </function>
+</category>
+
 <category name="GL_ANGLE_robust_client_memory" number="9995">
     <function name="GetBooleanvRobustANGLE" es2="2.0" desktop="false">
         <param name="pname" type="GLenum"/>

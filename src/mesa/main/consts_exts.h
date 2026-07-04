@@ -163,6 +163,7 @@ struct gl_extensions
    GLboolean ARB_vertex_type_2_10_10_10_rev;
    GLboolean ARB_viewport_array;
    GLboolean CHROMIUM_bind_generates_resource;
+   GLboolean CHROMIUM_copy_texture;
    GLboolean EXT_blend_equation_separate;
    GLboolean EXT_color_buffer_float;
    GLboolean EXT_color_buffer_half_float;

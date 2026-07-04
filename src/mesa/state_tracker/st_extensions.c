@@ -1169,6 +1169,7 @@ void st_init_extensions(struct pipe_screen *screen,
       extensions->ANGLE_request_extension = GL_TRUE;
       extensions->ANGLE_robust_client_memory = GL_TRUE;
       extensions->CHROMIUM_bind_generates_resource = GL_TRUE;
+      extensions->CHROMIUM_copy_texture = GL_TRUE;
    }
 
    /* MESA_texture_const_bandwidth depends on EXT_memory_object */

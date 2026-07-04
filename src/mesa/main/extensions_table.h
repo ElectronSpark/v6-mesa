@@ -217,6 +217,7 @@ EXT(ATI_texture_float                       , ARB_texture_float                 
 EXT(ATI_texture_mirror_once                 , ATI_texture_mirror_once                , GLL, GLC,  x ,  x , 2006)
 
 EXT(CHROMIUM_bind_generates_resource        , CHROMIUM_bind_generates_resource       ,  x ,  x ,  x , ES2, 2011)
+EXT(CHROMIUM_copy_texture                   , CHROMIUM_copy_texture                  ,  x ,  x ,  x , ES2, 2011)
 
 EXT(EXT_EGL_image_storage                   , EXT_EGL_image_storage                  , GLL, GLC , x ,  30, 2018)
 EXT(EXT_EGL_image_storage_compression       , EXT_EGL_image_storage                  , GLL, GLC , x ,  30, 2021)
