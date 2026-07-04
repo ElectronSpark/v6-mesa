@@ -30,6 +30,7 @@
 #include "texcompress.h"
 #include "teximage.h"
 #include "texobj.h"
+#include "uniforms.h"
 #include "../state_tracker/st_cb_copyimage.h"
 #include "api_exec_decl.h"
 
@@ -1048,6 +1049,10 @@ _mesa_GetUniformfvRobustANGLE(GLuint program, GLint location,
    _mesa_GetnUniformfvARB(program, location, bufSize, params);
    if (robust_error_generated(ctx, &error_state))
       return;
+   GLsizei count;
+   if (length && _mesa_get_uniform_component_count(ctx, program, location,
+                                                   &count))
+      *length = count;
 }
 
 void GLAPIENTRY
@@ -1072,6 +1077,10 @@ _mesa_GetUniformivRobustANGLE(GLuint program, GLint location,
    _mesa_GetnUniformivARB(program, location, bufSize, params);
    if (robust_error_generated(ctx, &error_state))
       return;
+   GLsizei count;
+   if (length && _mesa_get_uniform_component_count(ctx, program, location,
+                                                   &count))
+      *length = count;
 }
 
 void GLAPIENTRY
@@ -1096,6 +1105,10 @@ _mesa_GetUniformuivRobustANGLE(GLuint program, GLint location,
    _mesa_GetnUniformuivARB(program, location, bufSize, params);
    if (robust_error_generated(ctx, &error_state))
       return;
+   GLsizei count;
+   if (length && _mesa_get_uniform_component_count(ctx, program, location,
+                                                   &count))
+      *length = count;
 }
 
 void GLAPIENTRY

@@ -59,6 +59,10 @@ _mesa_get_uniform(struct gl_context *ctx, GLuint program, GLint location,
 		  GLsizei bufSize, enum glsl_base_type returnType,
 		  GLvoid *paramsOut);
 
+bool
+_mesa_get_uniform_component_count(struct gl_context *ctx, GLuint program,
+                                  GLint location, GLsizei *count);
+
 extern void
 _mesa_uniform_attach_driver_storage(struct gl_uniform_storage *,
 				    unsigned element_stride,

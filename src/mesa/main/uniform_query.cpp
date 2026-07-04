@@ -729,6 +729,30 @@ _mesa_get_uniform(struct gl_context *ctx, GLuint program, GLint location,
    }
 }
 
+extern "C" bool
+_mesa_get_uniform_component_count(struct gl_context *ctx, GLuint program,
+                                  GLint location, GLsizei *count)
+{
+   struct gl_shader_program *shProg =
+      _mesa_lookup_shader_program_err(ctx, program, "glGetUniform");
+   unsigned offset;
+
+   struct gl_uniform_storage *const uni =
+      validate_uniform_parameters(location, 1, &offset,
+                                  ctx, shProg, "glGetUniform");
+   if (uni == NULL) {
+      if (location == -1) {
+         _mesa_error(ctx, GL_INVALID_OPERATION, "glGetUniform(location=%d)",
+                     location);
+      }
+
+      return false;
+   }
+
+   *count = glsl_get_components(uni->type);
+   return true;
+}
+
 static void
 log_uniform(const void *values, enum glsl_base_type basicType,
 	    unsigned rows, unsigned cols, unsigned count,
