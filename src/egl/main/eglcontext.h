@@ -59,6 +59,7 @@ struct _egl_context {
    EGLint ResetNotificationStrategy;
    EGLint ContextPriority;
    EGLBoolean NoError;
+   EGLBoolean WebGLCompatibility;
    EGLint ReleaseBehavior;
    EGLBoolean Protected; /* EGL_EXT_protected_content */
 };

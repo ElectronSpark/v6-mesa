@@ -49,6 +49,7 @@ struct gl_extensions
    GLboolean ANGLE_request_extension;
    GLboolean ANGLE_robust_client_memory;
    GLboolean ANGLE_texture_compression_dxt;
+   GLboolean ANGLE_webgl_compatibility;
    GLboolean ARB_ES2_compatibility;
    GLboolean ARB_ES3_compatibility;
    GLboolean ARB_ES3_1_compatibility;

@@ -397,6 +397,21 @@ _eglParseContextAttribList(_EGLContext *ctx, _EGLDisplay *disp,
          ctx->NoError = !!val;
          break;
 
+      case EGL_CONTEXT_WEBGL_COMPATIBILITY_ANGLE:
+         if (!disp->Extensions.ANGLE_create_context_webgl_compatibility ||
+             api != EGL_OPENGL_ES_API) {
+            err = EGL_BAD_ATTRIBUTE;
+            break;
+         }
+
+         if (val != EGL_TRUE && val != EGL_FALSE) {
+            err = EGL_BAD_ATTRIBUTE;
+            break;
+         }
+
+         ctx->WebGLCompatibility = val == EGL_TRUE;
+         break;
+
       case EGL_CONTEXT_PRIORITY_LEVEL_IMG:
          /* The  EGL_IMG_context_priority spec says:
           *
@@ -610,6 +625,10 @@ _eglParseContextAttribList(_EGLContext *ctx, _EGLDisplay *disp,
       }
    }
 
+   if (ctx->WebGLCompatibility &&
+       (api != EGL_OPENGL_ES_API || ctx->ClientMajorVersion < 2))
+      err = EGL_BAD_MATCH;
+
    switch (ctx->ResetNotificationStrategy) {
    case EGL_NO_RESET_NOTIFICATION_KHR:
    case EGL_LOSE_CONTEXT_ON_RESET_KHR:
@@ -674,6 +693,7 @@ _eglInitContext(_EGLContext *ctx, _EGLDisplay *disp, _EGLConfig *conf,
    ctx->Flags = 0;
    ctx->ResetNotificationStrategy = EGL_NO_RESET_NOTIFICATION_KHR;
    ctx->ContextPriority = EGL_CONTEXT_PRIORITY_MEDIUM_IMG;
+   ctx->WebGLCompatibility = EGL_FALSE;
    ctx->ReleaseBehavior = EGL_CONTEXT_RELEASE_BEHAVIOR_FLUSH_KHR;
 
    err = _eglParseContextAttribList(ctx, disp, attrib_list);

@@ -543,8 +543,9 @@ _eglCreateExtensionsString(_EGLDisplay *disp)
    _EGL_CHECK_EXTENSION(ANDROID_native_fence_sync);
    _EGL_CHECK_EXTENSION(ANDROID_recordable);
 
-   _EGL_CHECK_EXTENSION(CHROMIUM_sync_control);
+   _EGL_CHECK_EXTENSION(ANGLE_create_context_webgl_compatibility);
    _EGL_CHECK_EXTENSION(ANGLE_sync_control_rate);
+   _EGL_CHECK_EXTENSION(CHROMIUM_sync_control);
 
    _EGL_CHECK_EXTENSION(EXT_buffer_age);
    _EGL_CHECK_EXTENSION(EXT_config_select_group);

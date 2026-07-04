@@ -60,7 +60,8 @@ dri_create_context(struct dri_screen *screen,
    unsigned allowed_attribs =
       __DRIVER_CONTEXT_ATTRIB_PRIORITY |
       __DRIVER_CONTEXT_ATTRIB_RELEASE_BEHAVIOR |
-      __DRIVER_CONTEXT_ATTRIB_NO_ERROR;
+      __DRIVER_CONTEXT_ATTRIB_NO_ERROR |
+      __DRIVER_CONTEXT_ATTRIB_WEBGL_COMPATIBILITY;
    const struct driOptionCache *optionCache = &screen->dev->option_cache;
 
    /* This is effectively doing error checking for GLX context creation (by both
@@ -149,6 +150,9 @@ dri_create_context(struct dri_screen *screen,
 
    if (ctx_config->attribute_mask & __DRIVER_CONTEXT_ATTRIB_PROTECTED)
       attribs.context_flags |= PIPE_CONTEXT_PROTECTED;
+
+   if (ctx_config->attribute_mask & __DRIVER_CONTEXT_ATTRIB_WEBGL_COMPATIBILITY)
+      attribs.webgl_compatibility = ctx_config->webgl_compatibility;
 
    struct dri_context *share_ctx = NULL;
    if (sharedContextPrivate) {

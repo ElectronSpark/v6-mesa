@@ -79,7 +79,7 @@
 #include "egldefines.h"
 #include "dispatch.h"
 
-#define NUM_ATTRIBS 16
+#define NUM_ATTRIBS 20
 
 static const enum pipe_format dri2_pbuffer_visuals[] = {
    PIPE_FORMAT_R16G16B16A16_FLOAT,
@@ -641,6 +641,9 @@ dri2_setup_screen(_EGLDisplay *disp)
    if ((api_mask & (1 << __DRI_API_GLES3)) && _eglIsApiValid(EGL_OPENGL_ES_API))
       disp->ClientAPIs |= EGL_OPENGL_ES3_BIT_KHR;
 
+   if (disp->ClientAPIs & (EGL_OPENGL_ES2_BIT | EGL_OPENGL_ES3_BIT_KHR))
+      disp->Extensions.ANGLE_create_context_webgl_compatibility = EGL_TRUE;
+
    disp->Extensions.KHR_create_context = EGL_TRUE;
    disp->Extensions.KHR_create_context_no_error = EGL_TRUE;
    disp->Extensions.KHR_no_config_context = EGL_TRUE;
@@ -1169,6 +1172,11 @@ dri2_fill_context_attribs(struct dri2_egl_context *dri2_ctx,
 
    if (dri2_ctx->base.Protected) {
       ctx_attribs[pos++] = __DRI_CTX_ATTRIB_PROTECTED;
+      ctx_attribs[pos++] = true;
+   }
+
+   if (dri2_ctx->base.WebGLCompatibility) {
+      ctx_attribs[pos++] = __DRI_CTX_ATTRIB_WEBGL_COMPATIBILITY;
       ctx_attribs[pos++] = true;
    }
 

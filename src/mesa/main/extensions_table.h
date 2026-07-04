@@ -34,6 +34,7 @@ EXT(ANGLE_request_extension                 , ANGLE_request_extension           
 EXT(ANGLE_robust_client_memory              , ANGLE_robust_client_memory             ,  x ,  x ,  x , ES2, 2017)
 EXT(ANGLE_texture_compression_dxt3          , ANGLE_texture_compression_dxt          , GLL, GLC, ES1, ES2, 2011)
 EXT(ANGLE_texture_compression_dxt5          , ANGLE_texture_compression_dxt          , GLL, GLC, ES1, ES2, 2011)
+EXT(ANGLE_webgl_compatibility               , ANGLE_webgl_compatibility              ,  x ,  x ,  x , ES2, 2021)
 
 EXT(APPLE_packed_pixels                     , dummy_true                             , GLL,  x ,  x ,  x , 2002)
 EXT(APPLE_sync                              , ARB_sync                               ,  x ,  x , ES1, ES2, 2012)

@@ -427,6 +427,8 @@ struct st_context_attribs
    /** Mask of PIPE_CONTEXT_x bits */
    unsigned context_flags;
 
+   bool webgl_compatibility;
+
    /**
     * The visual of the framebuffers the context will be bound to.
     */

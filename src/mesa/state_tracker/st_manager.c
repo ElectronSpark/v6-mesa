@@ -1052,6 +1052,9 @@ st_api_create_context(struct pipe_frontend_screen *fscreen,
       st_install_device_reset_callback(st);
    }
 
+   if (attribs->webgl_compatibility && is_gles)
+      st->ctx->Extensions.ANGLE_webgl_compatibility = GL_TRUE;
+
    if (attribs->flags & ST_CONTEXT_FLAG_RELEASE_NONE)
        st->ctx->Const.ContextReleaseBehavior = GL_NONE;
 

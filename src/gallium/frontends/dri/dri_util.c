@@ -507,6 +507,16 @@ driCreateContextAttribs(struct dri_screen *screen, int api,
               ctx_config.attribute_mask &= ~__DRIVER_CONTEXT_ATTRIB_PROTECTED;
            }
            break;
+        case __DRI_CTX_ATTRIB_WEBGL_COMPATIBILITY:
+           if (attribs[i * 2 + 1]) {
+              ctx_config.attribute_mask |=
+                 __DRIVER_CONTEXT_ATTRIB_WEBGL_COMPATIBILITY;
+              ctx_config.webgl_compatibility = attribs[i * 2 + 1];
+           } else {
+              ctx_config.attribute_mask &=
+                 ~__DRIVER_CONTEXT_ATTRIB_WEBGL_COMPATIBILITY;
+           }
+           break;
         default:
             /* We can't create a context that satisfies the requirements of an
              * attribute that we don't understand.  Return failure.
@@ -560,6 +570,13 @@ driCreateContextAttribs(struct dri_screen *screen, int api,
         && (ctx_config.flags & ~(__DRI_CTX_FLAG_DEBUG |
                                  __DRI_CTX_FLAG_ROBUST_BUFFER_ACCESS))) {
         *error = __DRI_CTX_ERROR_BAD_FLAG;
+        return NULL;
+    }
+
+    if ((ctx_config.attribute_mask &
+         __DRIVER_CONTEXT_ATTRIB_WEBGL_COMPATIBILITY) &&
+        mesa_api != API_OPENGLES2) {
+        *error = __DRI_CTX_ERROR_UNKNOWN_ATTRIBUTE;
         return NULL;
     }
 

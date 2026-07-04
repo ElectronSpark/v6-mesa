@@ -98,6 +98,7 @@ struct _egl_extensions {
    EGLBoolean ANDROID_native_fence_sync;
    EGLBoolean ANDROID_recordable;
 
+   EGLBoolean ANGLE_create_context_webgl_compatibility;
    EGLBoolean ANGLE_sync_control_rate;
    EGLBoolean CHROMIUM_sync_control;
 

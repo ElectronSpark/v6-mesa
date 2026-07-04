@@ -98,6 +98,9 @@ struct __DriverContextConfig {
 
     /* Only valid if __DRIVER_CONTEXT_ATTRIB_PROTECTED is set */
     int protected_context;
+
+    /* Only valid if __DRIVER_CONTEXT_ATTRIB_WEBGL_COMPATIBILITY is set */
+    int webgl_compatibility;
 };
 
 #define __DRIVER_CONTEXT_ATTRIB_RESET_STRATEGY   (1 << 0)
@@ -105,6 +108,7 @@ struct __DriverContextConfig {
 #define __DRIVER_CONTEXT_ATTRIB_RELEASE_BEHAVIOR (1 << 2)
 #define __DRIVER_CONTEXT_ATTRIB_NO_ERROR         (1 << 3)
 #define __DRIVER_CONTEXT_ATTRIB_PROTECTED        (1 << 4)
+#define __DRIVER_CONTEXT_ATTRIB_WEBGL_COMPATIBILITY (1 << 5)
 
 PUBLIC struct dri_screen *
 driCreateNewScreen3(int scrn, int fd,

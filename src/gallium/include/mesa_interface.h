@@ -500,8 +500,9 @@ enum dri_loader_cap {
  */
 #define __DRI_CTX_ATTRIB_PROTECTED              7
 
+#define __DRI_CTX_ATTRIB_WEBGL_COMPATIBILITY    8
 
-#define __DRI_CTX_NUM_ATTRIBS                   8
+#define __DRI_CTX_NUM_ATTRIBS                   9
 
 /**
  * \name Reasons that createContextAttribs might fail
