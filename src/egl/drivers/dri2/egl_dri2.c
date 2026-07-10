@@ -641,8 +641,12 @@ dri2_setup_screen(_EGLDisplay *disp)
    if ((api_mask & (1 << __DRI_API_GLES3)) && _eglIsApiValid(EGL_OPENGL_ES_API))
       disp->ClientAPIs |= EGL_OPENGL_ES3_BIT_KHR;
 
-   if (disp->ClientAPIs & (EGL_OPENGL_ES2_BIT | EGL_OPENGL_ES3_BIT_KHR))
-      disp->Extensions.ANGLE_create_context_webgl_compatibility = EGL_TRUE;
+   /* Revision 2 of EGL_ANGLE_create_context_webgl_compatibility also
+    * requires EGL_CONTEXT_HARDENED_ANGLE.  DRI2 only carries the older
+    * WebGL-compatibility bit and has no context/compiler hardening policy,
+    * so do not advertise a contract that EGL_CONTEXT_HARDENED_ANGLE=TRUE
+    * cannot honor.
+    */
 
    disp->Extensions.KHR_create_context = EGL_TRUE;
    disp->Extensions.KHR_create_context_no_error = EGL_TRUE;
